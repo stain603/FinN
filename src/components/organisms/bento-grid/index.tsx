@@ -12,7 +12,6 @@ import { LinearGradient } from "expo-linear-gradient";
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
-  useDerivedValue,
   useAnimatedProps,
   withSpring,
   withTiming,
@@ -20,8 +19,10 @@ import Animated, {
   withSequence,
   withDelay,
   Easing,
-  runOnJS,
 } from "react-native-reanimated";
+
+import { useApp } from "@/contexts/AppContext";
+import { formatCurrency } from "@/services/financialMetrics";
 
 const AnimatedPressable =
   Animated.createAnimatedComponent(Pressable);
@@ -30,6 +31,8 @@ const AnimatedText =
   Animated.createAnimatedComponent(Text);
 
 export default function HeroPortfolioCard() {
+  const { metrics, isLoading } = useApp();
+  
   const cardOpacity = useSharedValue(0);
   const cardTranslateY = useSharedValue(40);
   const cardScale = useSharedValue(0.92);
@@ -50,13 +53,13 @@ export default function HeroPortfolioCard() {
   const [displayValue, setDisplayValue] =
     React.useState("R$ 0");
 
-  useDerivedValue(() => {
-    runOnJS(setDisplayValue)(
-      `R$ ${Math.floor(
-        totalValue.value
-      ).toLocaleString("pt-BR")}`
-    );
-  });
+  // Use useEffect to update displayValue when totalValue changes
+  React.useEffect(() => {
+    const interval = setInterval(() => {
+      setDisplayValue(formatCurrency(Math.floor(totalValue.value)));
+    }, 16); // ~60fps
+    return () => clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     cardOpacity.value = withTiming(1, {
@@ -73,13 +76,16 @@ export default function HeroPortfolioCard() {
       stiffness: 120,
     });
 
-    totalValue.value = withDelay(
-      300,
-      withTiming(184500, {
-        duration: 1800,
-        easing: Easing.out(Easing.cubic),
-      })
-    );
+    // Animate to real value when data is loaded
+    if (!isLoading && metrics?.carteiraTotal !== undefined && metrics?.carteiraTotal !== null) {
+      totalValue.value = withDelay(
+        300,
+        withTiming(metrics.carteiraTotal, {
+          duration: 1800,
+          easing: Easing.out(Easing.cubic),
+        })
+      );
+    }
 
     glow1X.value = withRepeat(
       withSequence(
@@ -128,7 +134,7 @@ export default function HeroPortfolioCard() {
       ),
       -1
     );
-  }, []);
+  }, [metrics.carteiraTotal, isLoading]);
 
   const cardAnimatedStyle =
     useAnimatedStyle(() => ({
@@ -253,9 +259,9 @@ export default function HeroPortfolioCard() {
             </Text>
 
             <Text style={styles.profit}>
-              Lucro previsto:
+              Lucro esperado:
               {" "}
-              R$ 64.500
+              {formatCurrency(metrics.lucroEsperado)}
             </Text>
           </View>
 
@@ -267,7 +273,7 @@ export default function HeroPortfolioCard() {
             <Text
               style={styles.badgeText}
             >
-              +12,4% este mês
+              {metrics.recebidoSemana > 0 ? `+${((metrics.recebidoSemana / metrics.carteiraTotal) * 100).toFixed(1)}% esta semana` : 'Em crescimento'}
             </Text>
           </View>
         </BlurView>

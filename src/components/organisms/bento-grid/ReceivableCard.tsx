@@ -11,20 +11,23 @@ import { BlurView } from "expo-blur";
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
-  useDerivedValue,
   withDelay,
   withSpring,
   withTiming,
   withRepeat,
   withSequence,
   Easing,
-  runOnJS,
 } from "react-native-reanimated";
+
+import { useApp } from "@/contexts/AppContext";
+import { formatCurrency } from "@/services/financialMetrics";
 
 const AnimatedPressable =
   Animated.createAnimatedComponent(Pressable);
 
 export default function ReceivableCard() {
+  const { metrics, isLoading } = useApp();
+  
   const opacity = useSharedValue(0);
   const translateY = useSharedValue(40);
 
@@ -38,13 +41,13 @@ export default function ReceivableCard() {
   const [displayValue, setDisplayValue] =
     useState("R$ 0");
 
-  useDerivedValue(() => {
-    runOnJS(setDisplayValue)(
-      `R$ ${Math.floor(
-        value.value
-      ).toLocaleString("pt-BR")}`
-    );
-  });
+  // Use useEffect to update displayValue when value changes
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setDisplayValue(formatCurrency(Math.floor(value.value)));
+    }, 16); // ~60fps
+    return () => clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     opacity.value = withDelay(
@@ -62,13 +65,15 @@ export default function ReceivableCard() {
       })
     );
 
-    value.value = withDelay(
-      700,
-      withTiming(184500, {
-        duration: 1800,
-        easing: Easing.out(Easing.cubic),
-      })
-    );
+    if (!isLoading && metrics?.valorEmTransito !== undefined && metrics?.valorEmTransito !== null) {
+      value.value = withDelay(
+        700,
+        withTiming(metrics.valorEmTransito, {
+          duration: 1800,
+          easing: Easing.out(Easing.cubic),
+        })
+      );
+    }
 
     glowScale.value = withRepeat(
       withSequence(
@@ -93,7 +98,7 @@ export default function ReceivableCard() {
       ),
       -1
     );
-  }, []);
+  }, [metrics.valorEmTransito, isLoading]);
 
   const cardStyle =
     useAnimatedStyle(() => ({
@@ -172,7 +177,7 @@ export default function ReceivableCard() {
           />
 
           <Text style={styles.footerText}>
-            Recebimentos ativos
+            Saldo devedor ativo
           </Text>
         </View>
       </BlurView>

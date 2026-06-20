@@ -4,6 +4,7 @@
   "version": "1.0.0",
   "dependencies": {
     "@expo/vector-icons": "^15.1.1",
+    "@react-native-async-storage/async-storage": "2.2.0",
     "@react-navigation/bottom-tabs": "^7.18.0",
     "@shopify/react-native-skia": "2.6.2",
     "expo": "~56.0.8",
@@ -31,14 +32,18 @@
   },
   "devDependencies": {
     "@types/react": "~19.2.2",
+    "@types/node": "^20.0.0",
     "expo-module-scripts": "^56.0.3",
+    "ts-node": "^10.9.2",
     "typescript": "~6.0.3"
   },
   "scripts": {
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "test:metrics": "ts-node tests/dashboardMetrics.test.ts",
+    "test:auth": "ts-node tests/auth.test.ts"
   },
   "private": true
 }

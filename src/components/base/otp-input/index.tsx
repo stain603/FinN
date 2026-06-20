@@ -175,6 +175,7 @@ const OtpItem: FC<IOtpItem> & FunctionComponent<IOtpItem> = ({
         onKeyPress={(e) => onFocusPrevious(e.nativeEvent.key, index)}
         textContentType="oneTimeCode"
         autoFocus={autoFocus && index === 0}
+        editable={editable}
         {...rest}
       />
       <Pressable disabled={!editable} onPress={onPress} style={styles.overlay}>
@@ -361,11 +362,10 @@ export const OtpInput: FC<IOtpInput> & FunctionComponent<IOtpInput> =
         if (error) {
           triggerShakeAnimation();
           const timeout = setTimeout(() => {
-            otpValue.fill("");
-            setOtpValue([...otpValue]);
+            setOtpValue(new Array(otpCount).fill(""));
             setFocus(0);
-            inputRef.current[0].current.focus();
-          }, 1000);
+            inputRef.current[0]?.current?.focus();
+          }, 600);
           return () => clearTimeout(timeout);
         }
       }, [error]);

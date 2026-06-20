@@ -18,10 +18,14 @@ import Animated, {
   withSequence,
 } from "react-native-reanimated";
 
+import { useApp } from "@/contexts/AppContext";
+
 const AnimatedPressable =
   Animated.createAnimatedComponent(Pressable);
 
 export default function ClientsCard() {
+  const { metrics, isLoading } = useApp();
+  
   const opacity = useSharedValue(0);
   const translateY = useSharedValue(40);
 
@@ -123,6 +127,14 @@ export default function ClientsCard() {
       ],
     }));
 
+  // Calculate client stats
+  const emDia = metrics.clientesAtivos - metrics.clientesAtrasados;
+  const adimplencia = metrics.clientesAtivos > 0 
+    ? Math.round((emDia / metrics.clientesAtivos) * 100) 
+    : 0;
+  
+  const isHealthy = metrics.clientesAtrasados === 0;
+
   return (
     <AnimatedPressable
       style={[
@@ -156,7 +168,7 @@ export default function ClientsCard() {
           </Text>
 
           <Text style={styles.value}>
-            50
+            {metrics.clientesAtivos}
           </Text>
         </View>
 
@@ -171,7 +183,7 @@ export default function ClientsCard() {
             <Text
               style={styles.good}
             >
-              47
+              {emDia}
             </Text>
           </View>
 
@@ -185,7 +197,7 @@ export default function ClientsCard() {
             <Text
               style={styles.bad}
             >
-              3
+              {metrics.clientesAtrasados}
             </Text>
           </View>
 
@@ -199,7 +211,7 @@ export default function ClientsCard() {
             <Text
               style={styles.percent}
             >
-              94%
+              {adimplencia}%
             </Text>
           </View>
         </View>
@@ -208,14 +220,15 @@ export default function ClientsCard() {
           <Animated.View
             style={[
               styles.pulse,
+              { backgroundColor: isHealthy ? "#22C55E" : "#EF4444" },
               pulseStyle,
             ]}
           />
 
           <Text
-            style={styles.footerText}
+            style={[styles.footerText, { color: isHealthy ? "#4ADE80" : "#F87171" }]}
           >
-            Carteira saudável
+            {isHealthy ? 'Carteira saudável' : 'Atenção necessária'}
           </Text>
         </View>
       </BlurView>
@@ -303,14 +316,10 @@ const styles = StyleSheet.create({
 
     borderRadius: 999,
 
-    backgroundColor:
-      "#22C55E",
-
     marginRight: 10,
   },
 
   footerText: {
-    color: "#4ADE80",
     fontSize: 13,
     fontWeight: "600",
   },

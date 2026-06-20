@@ -1,4 +1,4 @@
-import { StyleSheet, ViewStyle } from "react-native";
+import { StyleSheet } from "react-native";
 import React, { memo } from "react";
 import Animated, {
   withTiming,
@@ -6,11 +6,9 @@ import Animated, {
   withSpring,
   LinearTransition,
   Easing,
-  useAnimatedProps,
   useSharedValue,
   useAnimatedStyle,
 } from "react-native-reanimated";
-import { BlurView, type BlurViewProps } from "expo-blur";
 import type {
   StaggeredTextProps,
   AnimationConfig,
@@ -24,9 +22,6 @@ import {
   DEFAULT_EXIT_FROM,
   DEFAULT_EXIT_TO,
 } from "./conf";
-
-const AnimatedBlurView =
-  Animated.createAnimatedComponent<BlurViewProps>(BlurView);
 
 const Character: React.FC<CharacterProps> = memo<CharacterProps>(
   ({
@@ -44,9 +39,6 @@ const Character: React.FC<CharacterProps> = memo<CharacterProps>(
     const enterDelay = index * animationConfig.characterDelay;
     const exitDelay = index * (animationConfig.characterDelay * 0.5);
 
-    const maxBlur = animationConfig.maxBlurIntensity ?? 12;
-    const blurIntensity = useSharedValue<number>(maxBlur);
-
     const enteringAnimation = () => {
       "worklet";
       const springConfig = animationConfig.spring;
@@ -54,15 +46,6 @@ const Character: React.FC<CharacterProps> = memo<CharacterProps>(
         duration: animationConfig.characterEnterDuration,
         easing: Easing.out(Easing.ease),
       };
-
-      blurIntensity.value = maxBlur;
-      blurIntensity.value = withDelay(
-        enterDelay,
-        withTiming(0, {
-          duration: animationConfig.characterEnterDuration * 0.8,
-          easing: Easing.out(Easing.ease),
-        }),
-      );
 
       return {
         initialValues: {
@@ -108,13 +91,6 @@ const Character: React.FC<CharacterProps> = memo<CharacterProps>(
         duration: animationConfig.characterExitDuration,
         easing: Easing.in(Easing.ease),
       };
-      blurIntensity.value = withDelay(
-        exitDelay,
-        withTiming(maxBlur, {
-          duration: animationConfig.characterExitDuration * 0.6,
-          easing: Easing.in(Easing.ease),
-        }),
-      );
 
       return {
         initialValues: {
@@ -154,16 +130,6 @@ const Character: React.FC<CharacterProps> = memo<CharacterProps>(
       };
     };
 
-    const animatedBlurProps = useAnimatedProps<
-      Pick<BlurViewProps, "intensity">
-    >(() => ({
-      intensity: blurIntensity.value,
-    }));
-
-    const animatedBlurStyle = useAnimatedStyle<ViewStyle>(() => ({
-      opacity: blurIntensity.value > 0.5 ? 1 : 0,
-    }));
-
     return (
       <Animated.View
         entering={enteringAnimation}
@@ -174,12 +140,6 @@ const Character: React.FC<CharacterProps> = memo<CharacterProps>(
         style={styles.characterWrapper}
       >
         <Animated.Text style={style}>{char}</Animated.Text>
-        <AnimatedBlurView
-          style={[StyleSheet.absoluteFillObject, animatedBlurStyle]}
-          animatedProps={animatedBlurProps}
-          tint="prominent"
-          experimentalBlurMethod={"dimezisBlurView"}
-        />
       </Animated.View>
     );
   },

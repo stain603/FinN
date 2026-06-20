@@ -18,20 +18,25 @@ import Svg, {
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
-  useDerivedValue,
   withDelay,
   withSpring,
   withTiming,
   withRepeat,
   withSequence,
   Easing,
-  runOnJS,
 } from "react-native-reanimated";
+
+import { useApp } from "@/contexts/AppContext";
+import { useLanguage } from "@/contexts/LanguageContext";
+import { formatCurrency } from "@/services/financialMetrics";
 
 const AnimatedPressable =
   Animated.createAnimatedComponent(Pressable);
 
 export default function LoanedCard() {
+  const { metrics, isLoading } = useApp();
+  const { t } = useLanguage();
+  
   const opacity = useSharedValue(0);
   const translateY = useSharedValue(40);
 
@@ -44,13 +49,13 @@ export default function LoanedCard() {
   const [displayValue, setDisplayValue] =
     useState("R$ 0");
 
-  useDerivedValue(() => {
-    runOnJS(setDisplayValue)(
-      `R$ ${Math.floor(
-        value.value
-      ).toLocaleString("pt-BR")}`
-    );
-  });
+  // Use useEffect to update displayValue when value changes
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setDisplayValue(formatCurrency(Math.floor(value.value)));
+    }, 16); // ~60fps
+    return () => clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     opacity.value = withDelay(
@@ -68,13 +73,15 @@ export default function LoanedCard() {
       })
     );
 
-    value.value = withDelay(
-      500,
-      withTiming(120000, {
-        duration: 1600,
-        easing: Easing.out(Easing.cubic),
-      })
-    );
+    if (!isLoading && metrics?.capitalInvestido !== undefined && metrics?.capitalInvestido !== null) {
+      value.value = withDelay(
+        500,
+        withTiming(metrics.capitalInvestido, {
+          duration: 1600,
+          easing: Easing.out(Easing.cubic),
+        })
+      );
+    }
 
     glowX.value = withRepeat(
       withSequence(
@@ -87,7 +94,7 @@ export default function LoanedCard() {
       ),
       -1
     );
-  }, []);
+  }, [metrics.capitalInvestido, isLoading]);
 
   const cardStyle =
     useAnimatedStyle(() => ({
@@ -142,7 +149,7 @@ export default function LoanedCard() {
       >
         <View>
           <Text style={styles.label}>
-            Emprestado
+            {t('valorTransito')}
           </Text>
 
           <Text style={styles.value}>
@@ -191,11 +198,11 @@ export default function LoanedCard() {
 
         <View style={styles.footer}>
           <Text style={styles.contracts}>
-            50 contratos
+            {metrics.valorEmTransito > 0 ? `${formatCurrency(metrics.valorEmTransito)} ${t('emTransito')}` : t('semValoresTransito')}
           </Text>
 
           <Text style={styles.growth}>
-            +8.7%
+            {metrics.carteiraTotal > 0 ? `+${((metrics.capitalInvestido / metrics.carteiraTotal) * 100).toFixed(1)}%` : '0%'}
           </Text>
         </View>
       </BlurView>

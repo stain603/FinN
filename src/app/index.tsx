@@ -1,36 +1,177 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { View, StyleSheet, Text, TextInput, TouchableOpacity } from "react-native";
 import { useRouter } from "expo-router";
-import OtpInput from "../components/base/otp-input"; // Seu componente nativo de PIN de 4 casas
+import OtpInput from "../components/base/otp-input";
+import StaggeredText from "../components/organisms/animated-text";
+import ConfirmDialog from "@/components/base/confirm-dialog";
+import { useLanguage } from "@/contexts/LanguageContext";
+import { useAuth } from "@/contexts/AuthContext";
 
 export default function Login() {
   const router = useRouter();
-  
-  // Troque para 'true' para simular um usuário abrindo o app pela segunda vez
-  const [usuarioJaRegistrado, setUsuarioJaRegistrado] = useState(false);
+  const { t } = useLanguage();
+  const { user, isAuthenticated, isLoading, login, createUser, switchAccount } = useAuth();
   
   const [nome, setNome] = useState("");
   const [pin, setPin] = useState("");
+  const [confirmPin, setConfirmPin] = useState("");
   const [error, setError] = useState(false);
+  const [showPin, setShowPin] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [pinInputKey, setPinInputKey] = useState(0);
+  const [confirmPinInputKey, setConfirmPinInputKey] = useState(0);
+  
+  const [dialogVisible, setDialogVisible] = useState(false);
+  const [dialogConfig, setDialogConfig] = useState<{
+    title: string;
+    message: string;
+    onConfirm: () => void;
+    destructive?: boolean;
+  } | null>(null);
 
-  const handleFinalizarCadastro = () => {
-    if (!nome.trim() || pin.length < 4) {
-      setError(true);
-      return;
+  // Redirect if already authenticated
+  useEffect(() => {
+    if (isAuthenticated) {
+      router.replace("/(first)");
     }
-    setError(false);
-    setUsuarioJaRegistrado(true);
-    router.replace("/Home");
+  }, [isAuthenticated]);
+
+  const handlePinChange = (value: string) => {
+    setPin(value);
+    if (error) {
+      setError(false);
+    }
   };
 
-  const handleAcessoDiretoPin = () => {
-    if (pin.length < 4) {
+  const handleConfirmPinChange = (value: string) => {
+    setConfirmPin(value);
+    if (error) {
+      setError(false);
+    }
+  };
+
+  const resetPinInput = () => {
+    setPin("");
+    setError(false);
+    setPinInputKey((key) => key + 1);
+  };
+
+  const handleFinalizarCadastro = async () => {
+    // Validation
+    if (!nome.trim()) {
       setError(true);
+      setDialogConfig({
+        title: t('error'),
+        message: t('userNameRequired'),
+        onConfirm: () => setDialogVisible(false),
+      });
+      setDialogVisible(true);
       return;
     }
-    setError(false);
-    router.replace("/Home");
+
+    if (pin.length !== 4 || !/^\d+$/.test(pin)) {
+      setError(true);
+      setDialogConfig({
+        title: t('error'),
+        message: t('pinInvalid'),
+        onConfirm: () => setDialogVisible(false),
+      });
+      setDialogVisible(true);
+      return;
+    }
+
+    if (pin !== confirmPin) {
+      setError(true);
+      setDialogConfig({
+        title: t('error'),
+        message: t('pinMismatch'),
+        onConfirm: () => setDialogVisible(false),
+      });
+      setDialogVisible(true);
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      await createUser(nome.trim(), pin);
+      router.replace("/(first)");
+    } catch (error: any) {
+      setError(true);
+      setDialogConfig({
+        title: t('error'),
+        message: error.message || t('error'),
+        onConfirm: () => setDialogVisible(false),
+      });
+      setDialogVisible(true);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
+
+  const handleAcessoDiretoPin = async () => {
+    if (pin.length !== 4 || !/^\d+$/.test(pin)) {
+      setError(true);
+      setDialogConfig({
+        title: t('error'),
+        message: t('pinInvalid'),
+        onConfirm: () => setDialogVisible(false),
+      });
+      setDialogVisible(true);
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      const success = await login(pin);
+      if (success) {
+        router.replace("/(first)");
+      } else {
+        resetPinInput();
+        setError(true);
+      }
+    } catch (error: any) {
+      resetPinInput();
+      setError(true);
+      setDialogConfig({
+        title: t('error'),
+        message: error.message || t('error'),
+        onConfirm: () => setDialogVisible(false),
+      });
+      setDialogVisible(true);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleSwitchAccount = async () => {
+    try {
+      setIsSubmitting(true);
+      await switchAccount();
+      setNome("");
+      setPin("");
+      setConfirmPin("");
+      setError(false);
+      setPinInputKey((key) => key + 1);
+      setConfirmPinInputKey((key) => key + 1);
+    } catch {
+      setDialogConfig({
+        title: t('error'),
+        message: t('error'),
+        onConfirm: () => setDialogVisible(false),
+      });
+      setDialogVisible(true);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <View style={styles.container}>
+        <Text style={styles.loadingText}>{t('loading')}</Text>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -41,16 +182,16 @@ export default function Login() {
       <View style={styles.cardContainer}>
         
         {/* MODO 1: CADASTRO INICIAL */}
-        {!usuarioJaRegistrado ? (
+        {!user ? (
           <View style={styles.premiumCard}>
-            <Text style={styles.title}>Faça seu cadastro</Text>
-            <Text style={styles.description}>Defina suas credenciais personalizadas de acesso</Text>
+            <Text style={styles.title}>{t('loginTitle')}</Text>
+            <Text style={styles.description}>{t('loginDescription')}</Text>
 
             <View style={styles.inputGroup}>
-              <Text style={styles.tagLabel}>NOME DO USUÁRIO</Text>
+              <Text style={styles.tagLabel}>{t('userNameLabel')}</Text>
               <TextInput
                 style={styles.textInput}
-                placeholder="ex: erick cardenas"
+                placeholder={t('userNamePlaceholder')}
                 placeholderTextColor="#4B5563"
                 value={nome}
                 onChangeText={setNome}
@@ -59,44 +200,99 @@ export default function Login() {
             </View>
 
             <View style={styles.inputGroup}>
-              <Text style={styles.tagLabel}>CRIE SEU PIN DE 4 DÍGITOS</Text>
+              <Text style={styles.tagLabel}>{t('createPinLabel')}</Text>
               <View style={styles.otpWrapper}>
-                <OtpInput otpCount={4} onInputChange={setPin} error={error} />
+                <OtpInput
+                  key={`register-pin-${pinInputKey}`}
+                  otpCount={4}
+                  onInputChange={handlePinChange}
+                  error={error}
+                  errorMessage={t('pinInvalid')}
+                />
               </View>
             </View>
 
-            <TouchableOpacity style={styles.submitButton} onPress={handleFinalizarCadastro}>
-              <Text style={styles.submitText}>Cadastrar e Entrar</Text>
+            <View style={styles.inputGroup}>
+              <Text style={styles.tagLabel}>{t('confirmPinLabel')}</Text>
+              <View style={styles.otpWrapper}>
+                <OtpInput
+                  key={`register-confirm-${confirmPinInputKey}`}
+                  otpCount={4}
+                  onInputChange={handleConfirmPinChange}
+                  error={error}
+                  errorMessage={t('pinMismatch')}
+                />
+              </View>
+            </View>
+
+            <TouchableOpacity 
+              style={[styles.submitButton, isSubmitting && styles.submitButtonDisabled]} 
+              onPress={handleFinalizarCadastro}
+              disabled={isSubmitting}
+            >
+              <Text style={styles.submitText}>
+                {isSubmitting ? t('creatingAccount') : t('registerButton')}
+              </Text>
             </TouchableOpacity>
           </View>
         ) : (
           
           /* MODO 2: USUÁRIO JÁ CADASTRADO */
           <View style={styles.premiumCard}>
-            <Text style={styles.title}>Bem-vindo de volta!</Text>
-            <Text style={styles.description}>Olá, {nome || "Usuário"}. Digite seu PIN para acessar.</Text>
+            <StaggeredText text={t('welcomeBack')} style={styles.title} />
+            <Text style={styles.description}>{t('welcomeMessage', { name: user.nome || t('user') })}</Text>
 
             <View style={styles.inputGroupCenter}>
-              <Text style={styles.tagLabelCenter}>INSIRA SEU PIN DE SEGURANÇA</Text>
+              <Text style={styles.tagLabelCenter}>{t('enterSecurityPin')}</Text>
               <View style={styles.otpWrapper}>
-                <OtpInput otpCount={4} onInputChange={setPin} error={error} />
+                <OtpInput
+                  key={`login-pin-${pinInputKey}`}
+                  otpCount={4}
+                  onInputChange={handlePinChange}
+                  error={error}
+                  errorMessage={t('pinIncorrect')}
+                  editable={!isSubmitting}
+                />
               </View>
             </View>
 
-            <TouchableOpacity style={styles.submitButton} onPress={handleAcessoDiretoPin}>
-              <Text style={styles.submitText}>Confirmar PIN</Text>
+            <TouchableOpacity 
+              style={[styles.submitButton, isSubmitting && styles.submitButtonDisabled]} 
+              onPress={handleAcessoDiretoPin}
+              disabled={isSubmitting}
+            >
+              <Text style={styles.submitText}>
+                {isSubmitting ? t('validatingPin') : t('confirmPinButton')}
+              </Text>
             </TouchableOpacity>
 
             <TouchableOpacity 
               style={styles.resetButton} 
-              onPress={() => { setUsuarioJaRegistrado(false); setPin(""); }}
+              onPress={handleSwitchAccount}
+              disabled={isSubmitting}
             >
-              <Text style={styles.resetText}>Alternar conta de acesso</Text>
+              <Text style={styles.resetText}>{t('switchAccount')}</Text>
             </TouchableOpacity>
+
+            <Text style={styles.legalWarning}>
+              Esta plataforma é destinada exclusivamente ao gerenciamento e organização de informações financeiras. O sistema não realiza empréstimos, não processa pagamentos e não participa de transações entre usuários e terceiros. O usuário é integralmente responsável pelo uso da plataforma e pelo cumprimento das leis aplicáveis.
+            </Text>
           </View>
         )}
 
       </View>
+
+      <ConfirmDialog
+        visible={dialogVisible}
+        title={dialogConfig?.title || ''}
+        message={dialogConfig?.message || ''}
+        onConfirm={() => {
+          dialogConfig?.onConfirm();
+          setDialogVisible(false);
+        }}
+        onCancel={() => setDialogVisible(false)}
+        destructive={dialogConfig?.destructive}
+      />
     </View>
   );
 }
@@ -107,6 +303,10 @@ const styles = StyleSheet.create({
     backgroundColor: "#040814", // Fundo profundo vivo
     justifyContent: "center",
     paddingHorizontal: 24,
+  },
+  loadingText: {
+    color: "#FFFFFF",
+    fontSize: 16,
   },
   blurAmbient: {
     position: "absolute",
@@ -200,6 +400,9 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.3,
     shadowRadius: 8,
   },
+  submitButtonDisabled: {
+    opacity: 0.6,
+  },
   submitText: {
     color: "#FFFFFF",
     fontSize: 16,
@@ -214,5 +417,13 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "600",
     textDecorationLine: "underline",
+  },
+  legalWarning: {
+    marginTop: 24,
+    paddingHorizontal: 20,
+    fontSize: 10,
+    color: '#6B7280',
+    textAlign: 'center',
+    lineHeight: 14,
   },
 });
