@@ -1,135 +1,192 @@
 # Finn
 
-> Sistema de Gestão Comercial Mobile desenvolvido com React Native.
+> Sistema de Gestão Comercial desenvolvido para atender uma demanda real de negócio, permitindo o gerenciamento de clientes, contratos, cobranças e recebimentos através de uma experiência simples, moderna e acessível.
 
-O Finn é uma aplicação mobile criada para auxiliar pequenos negócios no gerenciamento de clientes, vendas, produtos e operações comerciais através de uma experiência simples, intuitiva e acessível.
+## Sobre o Projeto
 
-O projeto surgiu a partir de uma demanda real e está sendo desenvolvido com foco em produtividade, organização de processos e boa experiência do usuário.
+O Finn nasceu da necessidade de centralizar o controle comercial de uma operação que realizava cobranças recorrentes, acompanhamento de contratos e gestão de recebimentos.
 
----
+A proposta foi desenvolver uma solução intuitiva, responsiva e acessível tanto em dispositivos móveis quanto na web, permitindo que toda a operação fosse acompanhada em um único ambiente.
 
-## Objetivo
-
-Muitos sistemas de gestão são complexos, caros ou exigem infraestrutura robusta para funcionar.
-
-O Finn busca oferecer uma alternativa moderna e prática, permitindo que pequenos empreendedores tenham acesso às principais funcionalidades de gestão comercial diretamente pelo celular.
+Atualmente o sistema está disponível como aplicação web instalável (PWA), oferecendo uma experiência próxima à de um aplicativo nativo.
 
 ---
 
-## Funcionalidades Planejadas
+## Funcionalidades
+
+### Autenticação
+
+* Cadastro de usuário local
+* Login protegido por PIN de 4 dígitos
+* Troca de conta
+* Alteração de PIN
+* Persistência de sessão
+* Armazenamento seguro local
 
 ### Gestão de Clientes
 
-- Cadastro de clientes
-- Histórico de compras
-- Consulta rápida de informações
-- Busca e filtros
+* Cadastro de clientes
+* Edição de informações
+* Exclusão de registros
+* Busca rápida
+* Histórico individual
 
-### Gestão de Produtos
+### Gestão de Contratos
 
-- Cadastro de produtos
-- Controle de estoque
-- Categorias
-- Atualização rápida de preços
+* Criação de contratos
+* Controle de parcelas
+* Registro de valores emprestados
+* Controle de valores a receber
+* Frequência de pagamento:
 
-### Controle Comercial
+  * Diário
+  * Semanal
+  * Mensal
+  * Anual
 
-- Registro de vendas
-- Histórico de movimentações
-- Relatórios básicos
-- Indicadores de desempenho
+### Controle Financeiro
 
-### Segurança
+* Valor total emprestado
+* Valor recebido
+* Valor pendente
+* Lucro projetado
+* Saldo devedor
+* Controle de pagamentos
 
-- Login local
-- PIN de acesso
-- Proteção de dados do usuário
+### Dashboard
+
+* Carteira total
+* Clientes ativos
+* Cobranças pendentes
+* Pagamentos do dia
+* Contratos concluídos
+* Indicadores financeiros
+
+### Backup e Recuperação
+
+* Exportação de dados
+* Backup local
+* Restauração completa do sistema
+
+### Internacionalização
+
+* Português
+* Inglês
+* Espanhol
 
 ### Experiência Mobile
 
-- Interface otimizada para smartphones
-- Navegação simplificada
-- Design focado em usabilidade
-- Modo escuro
+* Interface responsiva
+* Modo escuro
+* Instalação como PWA
+* Navegação otimizada para dispositivos móveis
 
 ---
 
-## Tecnologias
+## Stack Tecnológica
 
-### Front-End
+### Frontend
 
-- React Native
-- Expo
-- TypeScript
+* React Native
+* Expo
+* TypeScript
 
-### UI/UX
+### Navegação
 
-- NativeWind / Tailwind CSS
-- Figma
-- Design System próprio
+* Expo Router
 
-### Estado e Dados
+### Gerenciamento de Estado
 
-- Context API
-- Async Storage
-- APIs REST
+* Zustand
 
-### Ferramentas
+### Persistência de Dados
 
-- Git
-- GitHub
-- VS Code
+* AsyncStorage
 
----
+### UI e Experiência
 
-## Filosofia do Projeto
+* React Native Reanimated
+* Expo Blur
+* Expo Linear Gradient
+* React Native SVG
 
-O Finn está sendo desenvolvido seguindo três pilares:
+### Versionamento
 
-### Simplicidade
-
-A interface deve ser fácil de utilizar mesmo para usuários com pouca familiaridade com tecnologia.
-
-### Velocidade
-
-As tarefas mais comuns precisam ser executadas com o menor número possível de interações.
-
-### Clareza
-
-As informações devem ser apresentadas de forma objetiva e organizada.
+* Git
+* GitHub
 
 ---
 
-##  Screenshots
+## Arquitetura
 
-> Em breve
+O projeto foi desenvolvido seguindo princípios de:
 
----
-
-##  Roadmap
-
-- [x] Planejamento do produto
-- [x] Definição dos fluxos principais
-- [x] Estruturação inicial do projeto
-- [ ] Sistema de autenticação
-- [ ] Gestão de clientes
-- [ ] Gestão de produtos
-- [ ] Controle de vendas
-- [ ] Relatórios
-- [ ] MVP
-- [ ] Primeira versão de produção
+* SOLID
+* KISS
+* Componentização
+* Separação de responsabilidades
+* Persistência local desacoplada
+* Escalabilidade para integração futura com backend
 
 ---
 
-##  Autor
+## Próximas Versões
 
-**Pablo Dias**
+O roadmap atual contempla:
 
-Desenvolvedor de Software com foco em Front-End, UI/UX e Produtos Digitais.
+### Infraestrutura
 
-- LinkedIn: https://www.linkedin.com/in/devpablodias
-- GitHub: https://github.com/stain603
+* [ ] Banco de dados real
+* [ ] API própria
+* [ ] Sincronização em nuvem
+* [ ] Controle multiusuário
+
+### Produto
+
+* [ ] Relatórios avançados
+* [ ] Exportação PDF
+* [ ] Exportação Excel
+* [ ] Notificações automáticas
+* [ ] Gestão de vencimentos
+
+### Plataforma
+
+* [ ] Aplicativo Android
+* [ ] Aplicativo iOS
+* [ ] Deploy em infraestrutura própria
 
 ---
 
- Projeto em desenvolvimento.
+## Screenshots
+
+Em breve serão adicionadas capturas de tela das principais funcionalidades do sistema.
+
+---
+
+## Status do Projeto
+
+✅ MVP concluído
+
+✅ Sistema em operação
+
+✅ Deploy Web realizado
+
+Evoluindo para a versão com banco de dados e sincronização em nuvem
+
+---
+
+## Autor
+
+### Pablo Dias
+
+Desenvolvedor de Software focado em Front-End, Mobile e Produtos Digitais.
+
+GitHub:
+https://github.com/stain603
+
+LinkedIn:
+https://www.linkedin.com/in/devpablodias
+
+---
+
+Desenvolvido para resolver necessidades reais de gestão comercial através de uma experiência simples, eficiente e escalável.
