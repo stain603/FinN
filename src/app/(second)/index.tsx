@@ -20,7 +20,7 @@ import { useApp } from "@/contexts/AppContext";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { Client } from "@/types";
 import { useCurrencyInput } from "@/hooks/useCurrencyInput";
-import { formatCurrency } from "@/services/financialMetrics";
+import { formatCurrency, validateParcelasJaPagas } from "@/services/financialMetrics";
 
 export default function Costumer() {
   const { clients, addClient, deleteClient, updateClient, charges, markChargeAsPaid, payments, isLoading } = useApp();
@@ -46,6 +46,7 @@ export default function Costumer() {
   const valorTotalReceberInput = useCurrencyInput();
   const valorParcelaInput = useCurrencyInput();
   const [frequencia, setFrequencia] = useState<"Diário" | "Semanal" | "Mensal" | "Anual">("Mensal");
+  const [parcelasJaPagas, setParcelasJaPagas] = useState("0");
   const [observacao, setObservacao] = useState("");
 
   const clientesFiltrados = useMemo(() => 
@@ -112,6 +113,31 @@ export default function Costumer() {
       return;
     }
 
+    const parcelasTotaisPreview = Math.floor(
+      valorTotalReceberInput.getNumericValue() / valorParcelaInput.getNumericValue()
+    );
+    const parcelasJaPagasNum = parseInt(parcelasJaPagas, 10) || 0;
+    const parcelasError = validateParcelasJaPagas(parcelasJaPagasNum, parcelasTotaisPreview);
+
+    if (parcelasError === 'negative') {
+      setDialogConfig({
+        title: t('error'),
+        message: t('paidInstallmentsNegative'),
+        onConfirm: () => setDialogVisible(false),
+      });
+      setDialogVisible(true);
+      return;
+    }
+    if (parcelasError === 'exceedsTotal') {
+      setDialogConfig({
+        title: t('error'),
+        message: t('paidInstallmentsExceedsTotal', { total: parcelasTotaisPreview }),
+        onConfirm: () => setDialogVisible(false),
+      });
+      setDialogVisible(true);
+      return;
+    }
+
     if (isEditMode && selectedClient) {
       // Update existing client
       const updatedClient: Client = {
@@ -122,6 +148,7 @@ export default function Costumer() {
         valorEmprestado: valorEmprestadoInput.getNumericValue(),
         valorTotalReceber: valorTotalReceberInput.getNumericValue(),
         valorParcela: valorParcelaInput.getNumericValue(),
+        parcelasJaPagas: parcelasJaPagasNum,
         frequencia,
         observacao: observacao || undefined,
       };
@@ -143,17 +170,18 @@ export default function Costumer() {
         valorEmprestado: valorEmprestadoInput.getNumericValue(),
         valorTotalReceber: valorTotalReceberInput.getNumericValue(),
         valorParcela: valorParcelaInput.getNumericValue(),
+        parcelasJaPagas: parcelasJaPagasNum,
         frequencia,
         observacao: observacao || undefined,
         dataInicio: new Date().toISOString(),
         dataTermino: new Date().toISOString(),
         proximoVencimento: new Date().toISOString(),
-        lucroEsperado: valorTotalReceberInput.getNumericValue() - valorEmprestadoInput.getNumericValue(),
+        lucroEsperado: 0,
         valorRecebido: 0,
-        saldoDevedor: valorTotalReceberInput.getNumericValue(),
-        parcelasTotais: Math.floor(valorTotalReceberInput.getNumericValue() / valorParcelaInput.getNumericValue()),
+        saldoDevedor: 0,
+        parcelasTotais: 0,
         parcelasPagas: 0,
-        parcelasRestantes: Math.floor(valorTotalReceberInput.getNumericValue() / valorParcelaInput.getNumericValue()),
+        parcelasRestantes: 0,
         status: 'ativo',
         historicoPagamentos: [],
       };
@@ -174,6 +202,7 @@ export default function Costumer() {
     valorTotalReceberInput.onChangeText('');
     valorParcelaInput.onChangeText('');
     setFrequencia("Mensal");
+    setParcelasJaPagas("0");
     setObservacao("");
     setIsEditMode(false);
     setSelectedClient(null);
@@ -189,6 +218,7 @@ export default function Costumer() {
     valorTotalReceberInput.onChangeText(formatCurrency(client.valorTotalReceber));
     valorParcelaInput.onChangeText(formatCurrency(client.valorParcela));
     setFrequencia(client.frequencia);
+    setParcelasJaPagas(String(client.parcelasJaPagas ?? 0));
     setObservacao(client.observacao || "");
     setModalVisivel(true);
   };
@@ -317,6 +347,7 @@ export default function Costumer() {
             valorRecebido={item.valorRecebido}
             parcelasTotais={item.parcelasTotais}
             parcelasPagas={item.parcelasPagas}
+            parcelasRestantes={item.parcelasRestantes}
             saldoDevedor={item.saldoDevedor}
             proximoVencimento={item.proximoVencimento}
             status={item.status}
@@ -440,6 +471,20 @@ export default function Costumer() {
                       keyboardType="numeric"
                       value={valorParcelaInput.value}
                       onChangeText={valorParcelaInput.onChangeText}
+                    />
+                  </View>
+                </View>
+
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.label}>{t('paidInstallments')}</Text>
+                  <View style={styles.inputContainer}>
+                    <TextInput 
+                      style={styles.modalInput} 
+                      placeholder="0" 
+                      placeholderTextColor="#4B5563"
+                      keyboardType="number-pad"
+                      value={parcelasJaPagas}
+                      onChangeText={setParcelasJaPagas}
                     />
                   </View>
                 </View>

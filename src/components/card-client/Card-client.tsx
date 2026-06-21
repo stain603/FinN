@@ -32,6 +32,7 @@ interface CardClienteProps {
   valorRecebido?: number;
   parcelasTotais?: number;
   parcelasPagas?: number;
+  parcelasRestantes?: number;
   saldoDevedor?: number;
   proximoVencimento?: string;
   status?: "ativo" | "pendente" | "atrasado" | "quitado" | "cancelado";
@@ -51,6 +52,7 @@ export default function CardCliente({
   valorRecebido,
   parcelasTotais,
   parcelasPagas,
+  parcelasRestantes,
   saldoDevedor,
   proximoVencimento,
   status,
@@ -92,6 +94,11 @@ export default function CardCliente({
   };
 
   const statusColor = getStatusColor();
+
+  const percentComplete =
+    parcelasTotais && parcelasTotais > 0 && parcelasPagas !== undefined
+      ? Math.round((parcelasPagas / parcelasTotais) * 100)
+      : 0;
 
   // Função que dispara o WhatsApp nativo com o link dinâmico wa.me
   const abrirWhatsApp = () => {
@@ -195,16 +202,23 @@ export default function CardCliente({
         <View style={styles.progressContainer}>
           <View style={styles.progressInfo}>
             <Text style={styles.progressLabel}>{t('progress')}</Text>
-            <Text style={styles.progressText}>{parcelasPagas} / {parcelasTotais} {t('installments')}</Text>
+            <Text style={styles.progressText}>
+              {parcelasPagas} / {parcelasTotais} {t('installments')} • {percentComplete}% {t('completed')}
+            </Text>
           </View>
           <View style={styles.progressBar}>
             <View 
               style={[
                 styles.progressFill,
-                { width: `${(parcelasPagas / parcelasTotais) * 100}%` }
+                { width: `${Math.min(100, percentComplete)}%` }
               ]} 
             />
           </View>
+          {parcelasRestantes !== undefined && (
+            <Text style={styles.remainingInstallments}>
+              {parcelasRestantes} {t('remainingInstallments')}
+            </Text>
+          )}
         </View>
       )}
 
@@ -213,13 +227,13 @@ export default function CardCliente({
         <View style={styles.financialStatus}>
           {saldoDevedor !== undefined && (
             <View style={styles.statusItem}>
-              <Text style={styles.statusLabel}>{t('balance')}</Text>
+              <Text style={styles.statusLabel}>{t('remainingBalance')}</Text>
               <Text style={[styles.statusValue, saldoDevedor > 0 ? styles.statusValueDebt : styles.statusValuePaid]}>
                 {formatCurrency(saldoDevedor)}
               </Text>
             </View>
           )}
-          {proximoVencimento && (
+          {proximoVencimento && status !== 'quitado' && (
             <View style={[styles.statusItem, { alignItems: 'flex-end' }]}>
               <Text style={styles.statusLabel}>{t('nextDueDate')}</Text>
               <Text style={styles.statusValue}>
@@ -500,6 +514,12 @@ const styles = StyleSheet.create({
     height: '100%',
     backgroundColor: '#3B82F6',
     borderRadius: 3,
+  },
+  remainingInstallments: {
+    color: '#6B7280',
+    fontSize: 11,
+    marginTop: 6,
+    fontWeight: '500',
   },
   financialStatus: {
     flexDirection: 'row',

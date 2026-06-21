@@ -10,7 +10,7 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useLanguage } from "@/contexts/LanguageContext";
-import { formatCurrency } from "@/services/financialMetrics";
+import { formatCurrency, getInstallmentProgress } from "@/services/financialMetrics";
 import { Payment, Client } from "@/types";
 
 interface PaymentHistoryModalProps {
@@ -32,13 +32,7 @@ export default function PaymentHistoryModal({
 }: PaymentHistoryModalProps) {
   const { t } = useLanguage();
 
-  // Calculate statistics
-  const totalPaid = payments.reduce((sum, p) => sum + p.valor, 0);
-  const totalParcels = client?.parcelasTotais || 0;
-  const paidParcels = client?.parcelasPagas || 0;
-  const remainingParcels = client?.parcelasRestantes || 0;
-  const currentBalance = client?.saldoDevedor || 0;
-  const percentagePaid = totalParcels > 0 ? Math.round((paidParcels / totalParcels) * 100) : 0;
+  const progress = client ? getInstallmentProgress(client) : null;
 
   // Sort payments by date (newest first)
   const sortedPayments = [...payments].sort(
@@ -71,25 +65,37 @@ export default function PaymentHistoryModal({
           </View>
 
           {/* Statistics */}
-          {client && (
+          {client && progress && (
             <View style={styles.statsSection}>
               <View style={styles.statRow}>
                 <View style={styles.statItem}>
-                  <Text style={styles.statLabel}>{t('progress')}</Text>
-                  <Text style={styles.statValue}>{paidParcels} / {totalParcels}</Text>
+                  <Text style={styles.statLabel}>{t('paidInstallmentsLabel')}</Text>
+                  <Text style={styles.statValue}>{progress.paid} / {progress.total}</Text>
                 </View>
                 <View style={styles.statItem}>
-                  <Text style={styles.statLabel}>{t('outstandingBalance')}</Text>
-                  <Text style={[styles.statValue, currentBalance > 0 && styles.statValueDebt]}>
-                    {formatCurrency(currentBalance)}
+                  <Text style={styles.statLabel}>{t('remainingInstallmentsLabel')}</Text>
+                  <Text style={styles.statValue}>{progress.remaining}</Text>
+                </View>
+              </View>
+              <View style={styles.statRow}>
+                <View style={styles.statItem}>
+                  <Text style={styles.statLabel}>{t('amountReceived')}</Text>
+                  <Text style={[styles.statValue, styles.statValueReceived]}>
+                    {formatCurrency(progress.valorRecebido)}
+                  </Text>
+                </View>
+                <View style={styles.statItem}>
+                  <Text style={styles.statLabel}>{t('remainingAmount')}</Text>
+                  <Text style={[styles.statValue, progress.valorRestante > 0 && styles.statValueDebt]}>
+                    {formatCurrency(progress.valorRestante)}
                   </Text>
                 </View>
               </View>
               <View style={styles.progressBarContainer}>
                 <View style={styles.progressBar}>
-                  <View style={[styles.progressFill, { width: `${percentagePaid}%` }]} />
+                  <View style={[styles.progressFill, { width: `${progress.percent}%` }]} />
                 </View>
-                <Text style={styles.progressPercent}>{percentagePaid}%</Text>
+                <Text style={styles.progressPercent}>{progress.percent}%</Text>
               </View>
             </View>
           )}
@@ -219,6 +225,9 @@ const styles = StyleSheet.create({
   },
   statValueDebt: {
     color: '#EF4444',
+  },
+  statValueReceived: {
+    color: '#3B82F6',
   },
   progressBarContainer: {
     flexDirection: 'row',

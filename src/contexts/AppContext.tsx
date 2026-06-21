@@ -133,13 +133,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Client operations
   const addClient = async (client: Client) => {
-    // Calculate contract details automatically
     const clientWithCalculations = calculateContractDetails(client);
     await storageService.saveClient(clientWithCalculations);
     setClients(prev => [...prev, clientWithCalculations]);
 
-    // Create initial charge for the first payment
-    if (clientWithCalculations.proximoVencimento && clientWithCalculations.parcelasTotais) {
+    if (
+      clientWithCalculations.status !== 'quitado' &&
+      clientWithCalculations.parcelasRestantes > 0 &&
+      clientWithCalculations.proximoVencimento
+    ) {
       const initialCharge: Charge = {
         id: `${clientWithCalculations.id}-${clientWithCalculations.proximoVencimento.split('T')[0]}`,
         clienteId: clientWithCalculations.id,
@@ -147,7 +149,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         valor: clientWithCalculations.valorParcela,
         dataVencimento: clientWithCalculations.proximoVencimento,
         status: 'pendente',
-        parcela: 1,
+        parcela: clientWithCalculations.parcelasPagas + 1,
         totalParcelas: clientWithCalculations.parcelasTotais,
         telefone: clientWithCalculations.telefone,
       };
@@ -157,8 +159,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const updateClient = async (client: Client) => {
-    // Update financial status based on payments
-    const clientWithUpdatedStatus = updateClientFinancialStatus(client, payments);
+    const withDetails = calculateContractDetails(client);
+    const clientWithUpdatedStatus = updateClientFinancialStatus(withDetails, payments);
     await storageService.saveClient(clientWithUpdatedStatus);
     setClients(prev => prev.map(c => c.id === client.id ? clientWithUpdatedStatus : c));
   };

@@ -1,7 +1,7 @@
 import { Client, Charge, Loan, Payment, FinancialMetrics } from '../types';
 
 // Helper function to get days from payment frequency
-const getDaysFromFrequency = (frequency: "Diário" | "Semanal" | "Mensal" | "Anual"): number => {
+export const getDaysFromFrequency = (frequency: "Diário" | "Semanal" | "Mensal" | "Anual"): number => {
   switch (frequency) {
     case 'Diário': return 1;
     case 'Semanal': return 7;
@@ -28,6 +28,7 @@ export const migrateClientData = (client: any): Client => {
     valorEmprestado: client.valorEmprestado,
     valorTotalReceber: client.valorTotalReceber,
     valorParcela: client.valorParcela,
+    parcelasJaPagas: client.parcelasJaPagas ?? 0,
     frequencia: client.tipoPagamento || client.frequencia || 'Mensal',
     dataInicio: client.dataCadastro || client.dataInicio || new Date().toISOString(),
     dataTermino: client.dataTermino || new Date().toISOString(),
@@ -72,38 +73,104 @@ export const isCurrentMonth = (dateString: string): boolean => {
   return date.getMonth() === today.getMonth() && date.getFullYear() === today.getFullYear();
 };
 
+// Clamp parcelas já pagas within valid range [0, parcelasTotais]
+export const clampParcelasJaPagas = (parcelasJaPagas: number | undefined, parcelasTotais: number): number => {
+  const value = parcelasJaPagas ?? 0;
+  return Math.max(0, Math.min(Math.floor(value), parcelasTotais));
+};
+
+// Valor recebido antes de qualquer pagamento registrado no app
+export const getInitialValorRecebido = (client: Client): number => {
+  return (client.parcelasJaPagas ?? 0) * client.valorParcela;
+};
+
+// Calcula próximo vencimento com base nas parcelas já pagas
+const calculateProximoVencimento = (
+  dataInicio: string,
+  frequencia: Client['frequencia'],
+  parcelasPagas: number,
+  isContractPaid: boolean,
+  dataTermino: string
+): string => {
+  if (isContractPaid) return dataTermino;
+
+  const daysPerPeriod = getDaysFromFrequency(frequencia);
+  const startDate = new Date(dataInicio);
+  const nextDueDate = new Date(startDate);
+  if (parcelasPagas > 0) {
+    nextDueDate.setDate(startDate.getDate() + (parcelasPagas * daysPerPeriod));
+  }
+  return nextDueDate.toISOString();
+};
+
+// Progresso do contrato (fonte única para UI)
+export const getInstallmentProgress = (client: Client) => {
+  const total = client.parcelasTotais || 0;
+  const paid = client.parcelasPagas || 0;
+  const remaining = client.parcelasRestantes ?? Math.max(0, total - paid);
+  const percent = total > 0 ? Math.round((paid / total) * 100) : 0;
+
+  return {
+    paid,
+    total,
+    remaining,
+    percent,
+    valorRecebido: client.valorRecebido || 0,
+    valorRestante: client.saldoDevedor || 0,
+  };
+};
+
+// Valida parcelas já pagas (retorna mensagem de erro ou null)
+export const validateParcelasJaPagas = (
+  parcelasJaPagas: number,
+  parcelasTotais: number
+): string | null => {
+  if (parcelasJaPagas < 0) return 'negative';
+  if (parcelasJaPagas > parcelasTotais) return 'exceedsTotal';
+  return null;
+};
+
 // Calculate contract details automatically
 export const calculateContractDetails = (client: Client): Client => {
   const { valorEmprestado, valorTotalReceber, valorParcela, frequencia, dataInicio } = client;
-  
-  // Calculate expected profit
+
   const lucroEsperado = valorTotalReceber - valorEmprestado;
-  
-  // Calculate total parcels
   const parcelasTotais = Math.floor(valorTotalReceber / valorParcela);
-  
-  // Calculate end date based on frequency
+  const parcelasJaPagas = clampParcelasJaPagas(client.parcelasJaPagas, parcelasTotais);
+
   const daysPerPeriod = getDaysFromFrequency(frequencia);
   const startDate = new Date(dataInicio);
   const endDate = new Date(startDate);
   endDate.setDate(startDate.getDate() + (parcelasTotais * daysPerPeriod));
   const dataTermino = endDate.toISOString();
-  
-  // Calculate next due date - FIRST payment should be TODAY
-  const nextDueDate = new Date(startDate);
-  const proximoVencimento = nextDueDate.toISOString();
-  
+
+  const valorRecebido = parcelasJaPagas * valorParcela;
+  const saldoDevedor = Math.max(0, valorTotalReceber - valorRecebido);
+  const parcelasPagas = parcelasJaPagas;
+  const parcelasRestantes = parcelasTotais - parcelasPagas;
+  const isContractPaid = parcelasPagas >= parcelasTotais;
+
+  const proximoVencimento = calculateProximoVencimento(
+    dataInicio,
+    frequencia,
+    parcelasPagas,
+    isContractPaid,
+    dataTermino
+  );
+
   return {
     ...client,
+    parcelasJaPagas,
     lucroEsperado,
     parcelasTotais,
     dataTermino,
     proximoVencimento,
-    saldoDevedor: valorTotalReceber,
-    valorRecebido: 0,
-    parcelasPagas: 0,
-    parcelasRestantes: parcelasTotais,
-    historicoPagamentos: [],
+    saldoDevedor,
+    valorRecebido,
+    parcelasPagas,
+    parcelasRestantes,
+    status: isContractPaid ? 'quitado' : (client.status === 'cancelado' ? 'cancelado' : 'ativo'),
+    historicoPagamentos: client.historicoPagamentos || [],
   };
 };
 
@@ -113,34 +180,24 @@ export const updateClientFinancialStatus = (
   payments: Payment[]
 ): Client => {
   const clientPayments = payments.filter(p => p.clienteId === client.id);
-  const valorRecebido = clientPayments.reduce((sum, p) => sum + p.valor, 0);
-  
-  // Calculate paid parcels
-  const parcelasPagas = Math.floor(valorRecebido / client.valorParcela);
-  
-  // Calculate remaining debt
+  const initialReceived = getInitialValorRecebido(client);
+  const appPaymentsReceived = clientPayments.reduce((sum, p) => sum + p.valor, 0);
+  const valorRecebido = initialReceived + appPaymentsReceived;
+
+  const parcelasTotais = client.parcelasTotais || 0;
+  const parcelasPagas = Math.min(parcelasTotais, Math.floor(valorRecebido / client.valorParcela));
   const saldoDevedor = Math.max(0, client.valorTotalReceber - valorRecebido);
-  
-  // Check if contract is fully paid
-  const isContractPaid = saldoDevedor <= 0 && client.parcelasTotais && parcelasPagas >= client.parcelasTotais;
-  
-  // Calculate next due date based on paid parcels (only if not paid)
-  let proximoVencimento = client.proximoVencimento;
-  if (!isContractPaid) {
-    const daysPerPeriod = getDaysFromFrequency(client.frequencia);
-    const startDate = new Date(client.dataInicio);
-    const nextDueDate = new Date(startDate);
-    // First payment (parcelasPagas = 0) is due TODAY
-    // Subsequent payments follow the frequency
-    if (parcelasPagas === 0) {
-      // First payment is today
-      proximoVencimento = nextDueDate.toISOString();
-    } else {
-      // Next payment is after the paid periods
-      nextDueDate.setDate(startDate.getDate() + (parcelasPagas * daysPerPeriod));
-      proximoVencimento = nextDueDate.toISOString();
-    }
-  }
+  const isContractPaid = parcelasTotais > 0 && parcelasPagas >= parcelasTotais;
+
+  const proximoVencimento = isContractPaid
+    ? client.dataTermino
+    : calculateProximoVencimento(
+        client.dataInicio,
+        client.frequencia,
+        parcelasPagas,
+        false,
+        client.dataTermino
+      );
   
   // Build payment history from payments
   const historicoPagamentos = clientPayments.map((payment, index) => ({
@@ -155,7 +212,7 @@ export const updateClientFinancialStatus = (
     ...client,
     valorRecebido,
     parcelasPagas,
-    parcelasRestantes: client.parcelasTotais ? client.parcelasTotais - parcelasPagas : 0,
+    parcelasRestantes: parcelasTotais - parcelasPagas,
     saldoDevedor,
     proximoVencimento,
     status: isContractPaid ? 'quitado' : client.status || 'ativo',
