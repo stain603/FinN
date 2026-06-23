@@ -14,9 +14,9 @@ const LanguageContext = createContext<LanguageContextType | undefined>(undefined
 
 export function LanguageProvider({ children }: { children: ReactNode }) {
   const [language, setLanguage] = useState<Language>('portuguese');
-  const [isLoaded, setIsLoaded] = useState(false);
+  const [isLoaded, setIsLoaded] = useState(typeof window === 'undefined');
 
-  // Load saved language on mount
+  // Load saved language on mount (client only)
   useEffect(() => {
     const loadLanguage = async () => {
       try {

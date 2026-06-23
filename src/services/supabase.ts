@@ -1,5 +1,5 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createClient } from '@supabase/supabase-js';
+import { createSsrSafeStorage } from '@/utils/ssrStorage';
 
 const supabaseUrl =
   process.env.EXPO_PUBLIC_SUPABASE_URL ??
@@ -11,7 +11,7 @@ const supabaseAnonKey =
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
-    storage: AsyncStorage,
+    storage: createSsrSafeStorage(),
     autoRefreshToken: true,
     persistSession: true,
     detectSessionInUrl: false,
