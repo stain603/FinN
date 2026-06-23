@@ -1,5 +1,81 @@
 import { Client, Charge, Loan, Payment, FinancialMetrics } from '../types';
 
+export const startOfDay = (date: Date = new Date()): Date => {
+  const normalized = new Date(date);
+  normalized.setHours(0, 0, 0, 0);
+  return normalized;
+};
+
+export type ContractValidationError =
+  | 'totalLessThanLoan'
+  | 'installmentTooHigh'
+  | 'installmentRemainder';
+
+export const validateContractFinancials = (
+  valorEmprestado: number,
+  valorTotalReceber: number,
+  valorParcela: number
+): ContractValidationError | null => {
+  if (valorTotalReceber < valorEmprestado) {
+    return 'totalLessThanLoan';
+  }
+
+  const parcelasTotais = Math.floor(valorTotalReceber / valorParcela);
+  if (parcelasTotais < 1) {
+    return 'installmentTooHigh';
+  }
+
+  const remainder = Math.round((valorTotalReceber - parcelasTotais * valorParcela) * 100) / 100;
+  if (remainder > 0.01) {
+    return 'installmentRemainder';
+  }
+
+  return null;
+};
+
+export const isContractSettled = (
+  saldoDevedor: number,
+  parcelasRestantes: number
+): boolean => saldoDevedor <= 0 || parcelasRestantes <= 0;
+
+export const isContractActive = (client: Client): boolean => {
+  if (client.status === 'cancelado') {
+    return false;
+  }
+
+  const saldoDevedor = client.saldoDevedor ?? 0;
+  const parcelasRestantes = client.parcelasRestantes ?? 0;
+  return saldoDevedor > 0 && parcelasRestantes > 0;
+};
+
+export const getContractStatus = (
+  client: Client,
+  options?: {
+    saldoDevedor?: number;
+    parcelasRestantes?: number;
+    proximoVencimento?: string;
+  }
+): Client['status'] => {
+  if (client.status === 'cancelado') {
+    return 'cancelado';
+  }
+
+  const saldoDevedor = options?.saldoDevedor ?? client.saldoDevedor ?? 0;
+  const parcelasRestantes =
+    options?.parcelasRestantes ?? client.parcelasRestantes ?? 0;
+  const proximoVencimento = options?.proximoVencimento ?? client.proximoVencimento;
+
+  if (isContractSettled(saldoDevedor, parcelasRestantes)) {
+    return 'quitado';
+  }
+
+  if (proximoVencimento && isOverdue(proximoVencimento)) {
+    return 'atrasado';
+  }
+
+  return 'ativo';
+};
+
 // Helper function to get days from payment frequency
 export const getDaysFromFrequency = (frequency: "Diário" | "Semanal" | "Mensal" | "Anual"): number => {
   switch (frequency) {
@@ -39,23 +115,39 @@ export const migrateClientData = (client: any): Client => {
     parcelasTotais: client.totalParcelas ?? client.parcelasTotais ?? Math.floor(client.valorTotalReceber / client.valorParcela),
     parcelasPagas: client.parcelasPagas ?? 0,
     parcelasRestantes: client.parcelasRestantes ?? (client.totalParcelas ?? Math.floor(client.valorTotalReceber / client.valorParcela)),
-    status: client.status || client.status || 'ativo',
+    status: client.status || 'ativo',
     historicoPagamentos: client.historicoPagamentos || [],
   };
 };
 
 // Check if a date is today
 export const isToday = (dateString: string): boolean => {
-  const date = new Date(dateString);
-  const today = new Date();
-  return date.toDateString() === today.toDateString();
+  const date = startOfDay(new Date(dateString));
+  const today = startOfDay();
+  return date.getTime() === today.getTime();
+};
+
+// Check if a date is tomorrow
+export const isTomorrow = (dateString: string): boolean => {
+  const tomorrow = startOfDay();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const date = startOfDay(new Date(dateString));
+  return date.getTime() === tomorrow.getTime();
+};
+
+// Check if contract was recently created (display-only)
+export const isNewContract = (dataInicio: string, daysThreshold = 7): boolean => {
+  const start = startOfDay(new Date(dataInicio));
+  const today = startOfDay();
+  const diffDays = Math.floor((today.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
+  return diffDays >= 0 && diffDays <= daysThreshold;
 };
 
 // Check if a date is overdue
 export const isOverdue = (dateString: string): boolean => {
-  const date = new Date(dateString);
-  const today = new Date();
-  return date < today;
+  const date = startOfDay(new Date(dateString));
+  const today = startOfDay();
+  return date.getTime() < today.getTime();
 };
 
 // Get days until due date
@@ -64,6 +156,15 @@ export const getDaysUntilDue = (dateString: string): number => {
   const today = new Date();
   const diffTime = date.getTime() - today.getTime();
   return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+};
+
+// Human-readable days until due (display-only)
+export const formatDaysUntilDueLabel = (dateString: string): string => {
+  const days = getDaysUntilDue(dateString);
+  if (days < 0) return `Atrasado há ${Math.abs(days)} dias`;
+  if (days === 0) return 'Vence hoje';
+  if (days === 1) return 'Vence amanhã';
+  return `Vence em ${days} dias`;
 };
 
 // Check if current month
@@ -89,10 +190,10 @@ const calculateProximoVencimento = (
   dataInicio: string,
   frequencia: Client['frequencia'],
   parcelasPagas: number,
-  isContractPaid: boolean,
+  settled: boolean,
   dataTermino: string
 ): string => {
-  if (isContractPaid) return dataTermino;
+  if (settled) return dataTermino;
 
   const daysPerPeriod = getDaysFromFrequency(frequencia);
   const startDate = new Date(dataInicio);
@@ -148,13 +249,13 @@ export const calculateContractDetails = (client: Client): Client => {
   const saldoDevedor = Math.max(0, valorTotalReceber - valorRecebido);
   const parcelasPagas = parcelasJaPagas;
   const parcelasRestantes = parcelasTotais - parcelasPagas;
-  const isContractPaid = parcelasPagas >= parcelasTotais;
+  const settled = isContractSettled(saldoDevedor, parcelasRestantes);
 
   const proximoVencimento = calculateProximoVencimento(
     dataInicio,
     frequencia,
     parcelasPagas,
-    isContractPaid,
+    settled,
     dataTermino
   );
 
@@ -169,7 +270,11 @@ export const calculateContractDetails = (client: Client): Client => {
     valorRecebido,
     parcelasPagas,
     parcelasRestantes,
-    status: isContractPaid ? 'quitado' : (client.status === 'cancelado' ? 'cancelado' : 'ativo'),
+    status: getContractStatus(client, {
+      saldoDevedor,
+      parcelasRestantes,
+      proximoVencimento,
+    }),
     historicoPagamentos: client.historicoPagamentos || [],
   };
 };
@@ -185,11 +290,15 @@ export const updateClientFinancialStatus = (
   const valorRecebido = initialReceived + appPaymentsReceived;
 
   const parcelasTotais = client.parcelasTotais || 0;
-  const parcelasPagas = Math.min(parcelasTotais, Math.floor(valorRecebido / client.valorParcela));
+  const parcelasPagas = Math.min(
+    parcelasTotais,
+    Math.floor(valorRecebido / client.valorParcela)
+  );
+  const parcelasRestantes = parcelasTotais - parcelasPagas;
   const saldoDevedor = Math.max(0, client.valorTotalReceber - valorRecebido);
-  const isContractPaid = parcelasTotais > 0 && parcelasPagas >= parcelasTotais;
+  const settled = isContractSettled(saldoDevedor, parcelasRestantes);
 
-  const proximoVencimento = isContractPaid
+  const proximoVencimento = settled
     ? client.dataTermino
     : calculateProximoVencimento(
         client.dataInicio,
@@ -200,22 +309,30 @@ export const updateClientFinancialStatus = (
       );
   
   // Build payment history from payments
-  const historicoPagamentos = clientPayments.map((payment, index) => ({
+  const sortedPayments = [...clientPayments].sort(
+    (a, b) => new Date(a.dataPagamento).getTime() - new Date(b.dataPagamento).getTime()
+  );
+
+  const historicoPagamentos = sortedPayments.map((payment, index) => ({
     id: payment.id,
     valor: payment.valor,
     data: payment.dataPagamento.split('T')[0],
-    hora: payment.dataPagamento.split('T')[1].split('.')[0],
-    parcelaNumero: index + 1,
+    hora: payment.dataPagamento.split('T')[1]?.split('.')[0] ?? '00:00:00',
+    parcelaNumero: (client.parcelasJaPagas ?? 0) + index + 1,
   }));
   
   return {
     ...client,
     valorRecebido,
     parcelasPagas,
-    parcelasRestantes: parcelasTotais - parcelasPagas,
+    parcelasRestantes,
     saldoDevedor,
     proximoVencimento,
-    status: isContractPaid ? 'quitado' : client.status || 'ativo',
+    status: getContractStatus(client, {
+      saldoDevedor,
+      parcelasRestantes,
+      proximoVencimento,
+    }),
     historicoPagamentos,
   };
 };
@@ -223,19 +340,16 @@ export const updateClientFinancialStatus = (
 // Generate charges for clients automatically
 export const generateChargesForClients = (clients: Client[]): Charge[] => {
   const charges: Charge[] = [];
-  const today = new Date();
+  const today = startOfDay();
   
   clients.forEach(client => {
-    // Skip if contract is quitado or cancelado
-    if (client.status === 'quitado' || client.status === 'cancelado') return;
-    
+    if (client.status === 'cancelado') return;
+    if (!isContractActive(client)) return;
     if (!client.proximoVencimento || !client.parcelasTotais) return;
     
-    const nextDueDate = new Date(client.proximoVencimento);
+    const nextDueDate = startOfDay(new Date(client.proximoVencimento));
     
-    // Only generate charge if due date is today or in the past
-    if (nextDueDate <= today) {
-      // Check if charge already exists for this due date
+    if (nextDueDate.getTime() <= today.getTime()) {
       const chargeId = `${client.id}-${nextDueDate.toISOString().split('T')[0]}`;
       
       charges.push({
@@ -260,10 +374,9 @@ export const getOverdueClients = (clients: Client[]): Client[] => {
   const today = new Date();
   
   return clients.filter(client => {
-    if (!client.proximoVencimento || !client.saldoDevedor) return false;
-    if (client.saldoDevedor <= 0) return false; // Fully paid
-    if (client.status === 'quitado') return false;
-    
+    if (!isContractActive(client)) return false;
+    if (!client.proximoVencimento) return false;
+
     const nextDueDate = new Date(client.proximoVencimento);
     return nextDueDate < today;
   });
@@ -297,11 +410,11 @@ export const capitalInvestido = (clients: Client[]): number => {
   return clients.reduce((sum, c) => sum + (c.valorEmprestado || 0), 0);
 };
 
-// Calculate Valor em Trânsito
-// Valor em Trânsito = Sum of saldoDevedor of active contracts
+// Calculate Valor em Trânsito (A Receber)
+// Soma dos saldos devedores de contratos com saldo pendente
 export const valorEmTransito = (clients: Client[]): number => {
   return clients
-    .filter(c => c.status !== 'quitado' && c.status !== 'cancelado')
+    .filter(isContractActive)
     .reduce((sum, c) => sum + (c.saldoDevedor || 0), 0);
 };
 
@@ -334,55 +447,155 @@ export const recebidoSemana = (payments: Payment[]): number => {
     .reduce((sum, p) => sum + p.valor, 0);
 };
 
+// Calculate Recebido nos últimos 30 dias (display-only)
+export const recebidoUltimos30Dias = (payments: Payment[]): number => {
+  const today = new Date();
+  const thirtyDaysAgo = new Date(today);
+  thirtyDaysAgo.setDate(today.getDate() - 30);
+
+  return payments
+    .filter(p => {
+      const paymentDate = new Date(p.dataPagamento);
+      return paymentDate >= thirtyDaysAgo && paymentDate <= today;
+    })
+    .reduce((sum, p) => sum + p.valor, 0);
+};
+
+export type ChargeDisplayFilter = 'today' | 'tomorrow' | 'overdue' | 'week';
+
+const getActivePendingCharges = (charges: Charge[], clients: Client[]): Charge[] => {
+  const activeClientIds = new Set(
+    clients.filter(isContractActive).map(client => client.id)
+  );
+
+  return charges.filter(
+    charge => charge.status === 'pendente' && activeClientIds.has(charge.clienteId)
+  );
+};
+
+export const getChargeSummary = (charges: Charge[], clients: Client[]) => {
+  const pending = getActivePendingCharges(charges, clients);
+
+  return {
+    pendentes: pending.length,
+    vencidas: pending.filter(charge => isOverdue(charge.dataVencimento)).length,
+    hoje: pending.filter(charge => isToday(charge.dataVencimento)).length,
+    amanha: pending.filter(charge => isTomorrow(charge.dataVencimento)).length,
+  };
+};
+
+export const filterPendingChargesByPeriod = (
+  charges: Charge[],
+  clients: Client[],
+  filter: ChargeDisplayFilter
+): Charge[] => {
+  const today = startOfDay();
+  const nextWeek = new Date(today);
+  nextWeek.setDate(today.getDate() + 7);
+  nextWeek.setHours(23, 59, 59, 999);
+
+  const pending = getActivePendingCharges(charges, clients);
+
+  const filtered = pending.filter(charge => {
+    const dueDate = startOfDay(new Date(charge.dataVencimento));
+
+    switch (filter) {
+      case 'today':
+        return isToday(charge.dataVencimento);
+      case 'tomorrow':
+        return isTomorrow(charge.dataVencimento);
+      case 'overdue':
+        return isOverdue(charge.dataVencimento);
+      case 'week':
+        return dueDate.getTime() >= today.getTime() && dueDate.getTime() <= nextWeek.getTime();
+      default:
+        return true;
+    }
+  });
+
+  return filtered.sort(
+    (a, b) => new Date(a.dataVencimento).getTime() - new Date(b.dataVencimento).getTime()
+  );
+};
+
+export const groupPaymentsByMonth = (
+  payments: Payment[]
+): { key: string; label: string; payments: Payment[]; total: number }[] => {
+  const sorted = [...payments].sort(
+    (a, b) => new Date(b.dataPagamento).getTime() - new Date(a.dataPagamento).getTime()
+  );
+
+  const groups = new Map<string, Payment[]>();
+
+  sorted.forEach(payment => {
+    const date = new Date(payment.dataPagamento);
+    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+    const existing = groups.get(key) ?? [];
+    existing.push(payment);
+    groups.set(key, existing);
+  });
+
+  return Array.from(groups.entries()).map(([key, groupPayments]) => {
+    const [year, month] = key.split('-');
+    const label = new Date(Number(year), Number(month) - 1, 1).toLocaleDateString('pt-BR', {
+      month: 'long',
+      year: 'numeric',
+    });
+
+    return {
+      key,
+      label: label.charAt(0).toUpperCase() + label.slice(1),
+      payments: groupPayments,
+      total: groupPayments.reduce((sum, p) => sum + p.valor, 0),
+    };
+  });
+};
+
 // Calculate Clientes Ativos
 // Quantidade de contratos ativos (ativo, pendente, atrasado)
 export const clientesAtivos = (clients: Client[]): number => {
-  return clients.filter(c => 
-    c.status === 'ativo' || 
-    c.status === 'pendente' || 
-    c.status === 'atrasado'
-  ).length;
+  return clients.filter(isContractActive).length;
 };
 
 // Calculate Clientes Atrasados
-// Quantidade de clientes em atraso (hoje > proximoVencimento e pagamento não registrado)
 export const clientesAtrasados = (clients: Client[], charges: Charge[]): number => {
-  const today = new Date();
+  const overdueClientIds = new Set(
+    charges
+      .filter(charge => charge.status === 'pendente' && isOverdue(charge.dataVencimento))
+      .map(charge => charge.clienteId)
+  );
+
   return clients.filter(client => {
-    if (!client.proximoVencimento || (client.saldoDevedor ?? 0) <= 0) return false;
-    if (client.status === 'quitado') return false;
-    
-    const nextDueDate = new Date(client.proximoVencimento);
-    if (nextDueDate < today) {
-      // Check if payment exists for this due date
-      const hasPayment = charges.some(c => 
-        c.clienteId === client.id && 
-        c.status === 'pago' && 
-        isToday(c.dataPagamento || '')
-      );
-      return !hasPayment;
+    if (!isContractActive(client)) return false;
+
+    if (overdueClientIds.has(client.id)) {
+      return true;
     }
-    return false;
+
+    return Boolean(client.proximoVencimento && isOverdue(client.proximoVencimento));
   }).length;
 };
 
 // Calculate Clientes Quitados
 // Quantidade de contratos concluídos (saldoDevedor = 0)
 export const clientesQuitados = (clients: Client[]): number => {
-  return clients.filter(c => 
-    c.status === 'quitado' || 
-    (c.saldoDevedor !== undefined && c.saldoDevedor <= 0)
+  return clients.filter(
+    c =>
+      c.status !== 'cancelado' &&
+      isContractSettled(c.saldoDevedor ?? 0, c.parcelasRestantes ?? 0)
   ).length;
 };
 
 // Calculate Taxa de Adimplência
-// (Clientes em Dia ÷ Total Clientes) × 100
-export const taxaAdimplencia = (clients: Client[]): number => {
-  if (clients.length === 0) return 0;
-  const totalClientes = clients.length;
-  const clientesAtrasadosCount = clientesAtrasados(clients, []);
-  const clientesEmDia = totalClientes - clientesAtrasadosCount;
-  return (clientesEmDia / totalClientes) * 100;
+export const taxaAdimplencia = (clients: Client[], charges: Charge[]): number => {
+  const activeClients = clients.filter(isContractActive);
+
+  if (activeClients.length === 0) {
+    return 100;
+  }
+
+  const atrasados = clientesAtrasados(activeClients, charges);
+  return ((activeClients.length - atrasados) / activeClients.length) * 100;
 };
 
 // Get contract status color
@@ -438,7 +651,7 @@ export const calculateAllMetrics = (
     clientesAtivos: clientesAtivos(clients),
     clientesAtrasados: clientesAtrasados(clients, charges),
     clientesQuitados: clientesQuitados(clients),
-    taxaAdimplencia: taxaAdimplencia(clients),
+    taxaAdimplencia: taxaAdimplencia(clients, charges),
   };
 };
 
@@ -448,14 +661,13 @@ export const getDashboardData = (
   payments: Payment[],
   clients: Client[]
 ): { clientesAtrasados: (Charge & { saldoDevedor?: number; diasAtraso?: number })[]; clientesHoje: Charge[]; pagosHoje: Payment[]; listaSemana: Charge[]; contratosConcluidos: Client[] } => {
-  const today = new Date();
+  const today = startOfDay();
   
   const clientesAtrasados = charges.filter(
     c => c.status === 'pendente' && isOverdue(c.dataVencimento)
   ).map(charge => {
     const client = clients.find(c => c.id === charge.clienteId);
-    // Skip if contract is quitado
-    if (client?.status === 'quitado') return null;
+    if (!client || !isContractActive(client)) return null;
     
     // Calculate days overdue
     const dueDate = new Date(charge.dataVencimento);
@@ -476,8 +688,7 @@ export const getDashboardData = (
   const clientesHoje = charges.filter(
     c => {
       const client = clients.find(cl => cl.id === c.clienteId);
-      // Skip if contract is quitado
-      if (client?.status === 'quitado') return false;
+      if (!client || !isContractActive(client)) return false;
       return c.status === 'pendente' && isToday(c.dataVencimento);
     }
   );
@@ -492,14 +703,14 @@ export const getDashboardData = (
   // Lista da Semana - charges dos próximos 7 dias
   const nextWeek = new Date(today);
   nextWeek.setDate(today.getDate() + 7);
+  nextWeek.setHours(23, 59, 59, 999);
   
   const listaSemana = charges.filter(
     c => {
       const client = clients.find(cl => cl.id === c.clienteId);
-      // Skip if contract is quitado
-      if (client?.status === 'quitado') return false;
-      const dueDate = new Date(c.dataVencimento);
-      return c.status === 'pendente' && dueDate > today && dueDate <= nextWeek;
+      if (!client || !isContractActive(client)) return false;
+      const dueDate = startOfDay(new Date(c.dataVencimento));
+      return c.status === 'pendente' && dueDate.getTime() > today.getTime() && dueDate.getTime() <= nextWeek.getTime();
     }
   ).sort((a, b) => new Date(a.dataVencimento).getTime() - new Date(b.dataVencimento).getTime());
   
@@ -508,10 +719,10 @@ export const getDashboardData = (
     index === self.findIndex(c => c.clienteId === charge.clienteId)
   );
   
-  // Contratos Concluídos - clients with status quitado or saldoDevedor = 0
-  const contratosConcluidos = clients.filter(c => 
-    c.status === 'quitado' || 
-    (c.saldoDevedor !== undefined && c.saldoDevedor <= 0)
+  const contratosConcluidos = clients.filter(
+    c =>
+      c.status !== 'cancelado' &&
+      isContractSettled(c.saldoDevedor ?? 0, c.parcelasRestantes ?? 0)
   );
   
   return {

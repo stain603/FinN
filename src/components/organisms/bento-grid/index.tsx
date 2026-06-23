@@ -22,6 +22,7 @@ import Animated, {
 } from "react-native-reanimated";
 
 import { useApp } from "@/contexts/AppContext";
+import { useLanguage } from "@/contexts/LanguageContext";
 import { formatCurrency } from "@/services/financialMetrics";
 
 const AnimatedPressable =
@@ -32,6 +33,7 @@ const AnimatedText =
 
 export default function HeroPortfolioCard() {
   const { metrics, isLoading } = useApp();
+  const { t } = useLanguage();
   
   const cardOpacity = useSharedValue(0);
   const cardTranslateY = useSharedValue(40);
@@ -53,13 +55,19 @@ export default function HeroPortfolioCard() {
   const [displayValue, setDisplayValue] =
     React.useState("R$ 0");
 
-  // Use useEffect to update displayValue when totalValue changes
   React.useEffect(() => {
-    const interval = setInterval(() => {
-      setDisplayValue(formatCurrency(Math.floor(totalValue.value)));
-    }, 16); // ~60fps
-    return () => clearInterval(interval);
-  }, []);
+    if (isLoading) return;
+    const target = metrics.carteiraTotal ?? 0;
+    let current = 0;
+    const steps = 40;
+    const increment = Math.max(1, target / steps);
+    const timer = setInterval(() => {
+      current = Math.min(current + increment, target);
+      setDisplayValue(formatCurrency(Math.floor(current)));
+      if (current >= target) clearInterval(timer);
+    }, 45);
+    return () => clearInterval(timer);
+  }, [metrics.carteiraTotal, isLoading]);
 
   useEffect(() => {
     cardOpacity.value = withTiming(1, {
@@ -273,7 +281,9 @@ export default function HeroPortfolioCard() {
             <Text
               style={styles.badgeText}
             >
-              {metrics.recebidoSemana > 0 ? `+${((metrics.recebidoSemana / metrics.carteiraTotal) * 100).toFixed(1)}% esta semana` : 'Em crescimento'}
+              {metrics.recebidoSemana > 0
+                ? `${formatCurrency(metrics.recebidoSemana)} ${t('receivedThisWeek')}`
+                : t('noReceiptsThisWeek')}
             </Text>
           </View>
         </BlurView>

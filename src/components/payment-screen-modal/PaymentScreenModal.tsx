@@ -11,8 +11,13 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useApp } from '@/contexts/AppContext';
-import { formatCurrency, isToday, isCurrentMonth } from '@/services/financialMetrics';
-import { Payment } from '@/types';
+import {
+  formatCurrency,
+  isToday,
+  isCurrentMonth,
+  recebidoUltimos30Dias,
+  groupPaymentsByMonth,
+} from '@/services/financialMetrics';
 
 type FilterType = 'all' | 'today' | 'week' | 'month' | 'year' | 'custom';
 
@@ -32,7 +37,7 @@ export default function PaymentScreenModal({ visible, onClose }: PaymentScreenMo
     const today = new Date();
     const sevenDaysAgo = new Date(today);
     sevenDaysAgo.setDate(today.getDate() - 7);
-    
+
     const yearStart = new Date(today.getFullYear(), 0, 1);
     const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
 
@@ -60,32 +65,40 @@ export default function PaymentScreenModal({ visible, onClose }: PaymentScreenMo
           return paymentDate >= start && paymentDate <= end;
         });
       default:
-        return payments;
+        return [...payments].sort(
+          (a, b) => new Date(b.dataPagamento).getTime() - new Date(a.dataPagamento).getTime()
+        );
     }
   }, [payments, filter, customStartDate, customEndDate]);
+
+  const groupedPayments = useMemo(
+    () => groupPaymentsByMonth(filteredPayments),
+    [filteredPayments]
+  );
 
   const statistics = useMemo(() => {
     const today = new Date();
     const sevenDaysAgo = new Date(today);
     sevenDaysAgo.setDate(today.getDate() - 7);
-    const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
 
     const totalToday = payments
       .filter(p => isToday(p.dataPagamento))
       .reduce((sum, p) => sum + p.valor, 0);
-    
+
     const totalWeek = payments
       .filter(p => {
         const paymentDate = new Date(p.dataPagamento);
         return paymentDate >= sevenDaysAgo && paymentDate <= today;
       })
       .reduce((sum, p) => sum + p.valor, 0);
-    
+
     const totalMonth = payments
       .filter(p => isCurrentMonth(p.dataPagamento))
       .reduce((sum, p) => sum + p.valor, 0);
 
-    return { totalToday, totalWeek, totalMonth };
+    const totalLast30Days = recebidoUltimos30Dias(payments);
+
+    return { totalToday, totalWeek, totalMonth, totalLast30Days };
   }, [payments]);
 
   const FilterButton = ({ type, label }: { type: FilterType; label: string }) => (
@@ -107,7 +120,6 @@ export default function PaymentScreenModal({ visible, onClose }: PaymentScreenMo
       onRequestClose={onClose}
     >
       <View style={styles.container}>
-        {/* Header */}
         <View style={styles.header}>
           <TouchableOpacity onPress={onClose} style={styles.closeButton}>
             <Ionicons name="close" size={24} color="#FFFFFF" />
@@ -116,23 +128,28 @@ export default function PaymentScreenModal({ visible, onClose }: PaymentScreenMo
           <View style={styles.headerSpacer} />
         </View>
 
-        {/* Statistics */}
         <View style={styles.statsContainer}>
           <View style={styles.statCard}>
             <Text style={styles.statLabel}>{t('todayPayments')}</Text>
             <Text style={styles.statValue}>{formatCurrency(statistics.totalToday)}</Text>
           </View>
           <View style={styles.statCard}>
-            <Text style={styles.statLabel}>{t('weekList')}</Text>
-            <Text style={styles.statValue}>{formatCurrency(statistics.totalWeek)}</Text>
+            <Text style={styles.statLabel}>{t('currentMonth')}</Text>
+            <Text style={styles.statValue}>{formatCurrency(statistics.totalMonth)}</Text>
           </View>
           <View style={styles.statCard}>
-            <Text style={styles.statLabel}>{t('month')}</Text>
-            <Text style={styles.statValue}>{formatCurrency(statistics.totalMonth)}</Text>
+            <Text style={styles.statLabel}>{t('last30Days')}</Text>
+            <Text style={styles.statValue}>{formatCurrency(statistics.totalLast30Days)}</Text>
           </View>
         </View>
 
-        {/* Filters */}
+        <View style={styles.weekStatRow}>
+          <Ionicons name="trending-up" size={14} color="#10B981" />
+          <Text style={styles.weekStatText}>
+            {t('weekList')}: {formatCurrency(statistics.totalWeek)}
+          </Text>
+        </View>
+
         <View style={styles.filtersContainer}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filtersScroll}>
             <FilterButton type="all" label={t('all')} />
@@ -144,7 +161,6 @@ export default function PaymentScreenModal({ visible, onClose }: PaymentScreenMo
           </ScrollView>
         </View>
 
-        {/* Custom Date Range */}
         {filter === 'custom' && (
           <View style={styles.customDateContainer}>
             <TextInput
@@ -164,7 +180,6 @@ export default function PaymentScreenModal({ visible, onClose }: PaymentScreenMo
           </View>
         )}
 
-        {/* Payments List */}
         <ScrollView style={styles.listContainer} showsVerticalScrollIndicator={false}>
           {filteredPayments.length === 0 ? (
             <View style={styles.emptyState}>
@@ -173,30 +188,37 @@ export default function PaymentScreenModal({ visible, onClose }: PaymentScreenMo
               <Text style={styles.emptyStateSubtitle}>{t('noPaymentsRecorded')}</Text>
             </View>
           ) : (
-            filteredPayments.map((payment) => (
-              <View key={payment.id} style={styles.paymentCard}>
-                <View style={styles.paymentLeft}>
-                  <View style={styles.paymentIcon}>
-                    <Ionicons name="checkmark-circle" size={20} color="#10B981" />
-                  </View>
-                  <View>
-                    <Text style={styles.clientName}>{payment.clienteNome}</Text>
-                    <Text style={styles.paymentMeta}>
-                      {new Date(payment.dataPagamento).toLocaleDateString('pt-BR', {
-                        day: '2-digit',
-                        month: '2-digit',
-                        year: '2-digit',
-                      })}
-                    </Text>
-                    <Text style={styles.paymentMeta}>
-                      {new Date(payment.dataPagamento).toLocaleTimeString('pt-BR', {
-                        hour: '2-digit',
-                        minute: '2-digit',
-                      })}
-                    </Text>
-                  </View>
+            groupedPayments.map(group => (
+              <View key={group.key} style={styles.monthGroup}>
+                <View style={styles.monthHeader}>
+                  <Text style={styles.monthTitle}>{group.label}</Text>
+                  <Text style={styles.monthTotal}>{formatCurrency(group.total)}</Text>
                 </View>
-                <Text style={styles.paymentValue}>{formatCurrency(payment.valor)}</Text>
+                {group.payments.map(payment => (
+                  <View key={payment.id} style={styles.paymentCard}>
+                    <View style={styles.paymentLeft}>
+                      <View style={styles.paymentIcon}>
+                        <Ionicons name="checkmark-circle" size={20} color="#10B981" />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.clientName} numberOfLines={1}>{payment.clienteNome}</Text>
+                        <Text style={styles.paymentMeta}>
+                          {new Date(payment.dataPagamento).toLocaleDateString('pt-BR', {
+                            day: '2-digit',
+                            month: '2-digit',
+                            year: '2-digit',
+                          })}
+                          {' • '}
+                          {new Date(payment.dataPagamento).toLocaleTimeString('pt-BR', {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
+                        </Text>
+                      </View>
+                    </View>
+                    <Text style={styles.paymentValue}>{formatCurrency(payment.valor)}</Text>
+                  </View>
+                ))}
               </View>
             ))
           )}
@@ -240,25 +262,38 @@ const styles = StyleSheet.create({
   statsContainer: {
     flexDirection: 'row',
     padding: 20,
-    gap: 12,
+    paddingBottom: 8,
+    gap: 10,
   },
   statCard: {
     flex: 1,
     backgroundColor: '#111827',
     borderRadius: 16,
-    padding: 16,
+    padding: 14,
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.05)',
   },
   statLabel: {
-    fontSize: 12,
+    fontSize: 11,
     color: '#9CA3AF',
-    marginBottom: 8,
+    marginBottom: 6,
   },
   statValue: {
-    fontSize: 18,
+    fontSize: 15,
     fontWeight: '700',
     color: '#FFFFFF',
+  },
+  weekStatRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 20,
+    paddingBottom: 12,
+  },
+  weekStatText: {
+    color: '#6B7280',
+    fontSize: 12,
+    fontWeight: '600',
   },
   filtersContainer: {
     paddingHorizontal: 20,
@@ -309,6 +344,29 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingHorizontal: 20,
   },
+  monthGroup: {
+    marginBottom: 20,
+  },
+  monthHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.06)',
+  },
+  monthTitle: {
+    color: '#9CA3AF',
+    fontSize: 13,
+    fontWeight: '700',
+    textTransform: 'capitalize',
+  },
+  monthTotal: {
+    color: '#10B981',
+    fontSize: 14,
+    fontWeight: '700',
+  },
   emptyState: {
     alignItems: 'center',
     paddingVertical: 60,
@@ -323,12 +381,14 @@ const styles = StyleSheet.create({
     color: '#6B7280',
     fontSize: 14,
     marginTop: 4,
+    textAlign: 'center',
+    paddingHorizontal: 24,
   },
   paymentCard: {
     backgroundColor: '#111827',
     borderRadius: 16,
     padding: 16,
-    marginBottom: 12,
+    marginBottom: 10,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
@@ -340,6 +400,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flex: 1,
     gap: 12,
+    marginRight: 8,
   },
   paymentIcon: {
     backgroundColor: 'rgba(16, 185, 129, 0.15)',

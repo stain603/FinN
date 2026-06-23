@@ -1,45 +1,45 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, ReactNode, useCallback } from 'react';
 import { Client, Charge, Loan, Payment, FinancialMetrics, DashboardData } from '../types';
 import * as storageService from '../services/storageService';
-import { calculateAllMetrics, getDashboardData, calculateContractDetails, updateClientFinancialStatus, generateChargesForClients, migrateClientData } from '../services/financialMetrics';
+import { generateId } from '../services/storageService';
+import { useAuth } from './AuthContext';
+import { calculateAllMetrics, getDashboardData, calculateContractDetails, updateClientFinancialStatus, generateChargesForClients, migrateClientData, isContractActive } from '../services/financialMetrics';
+import { mapSupabaseError } from '../utils/supabaseErrors';
 
 interface AppContextType {
-  // Data
   clients: Client[];
   charges: Charge[];
   loans: Loan[];
   payments: Payment[];
   metrics: FinancialMetrics;
   dashboardData: DashboardData;
-  
-  // Loading state
   isLoading: boolean;
-  
-  // Setters for backup/restore
+  loadError: string | null;
   setClients: React.Dispatch<React.SetStateAction<Client[]>>;
   setCharges: React.Dispatch<React.SetStateAction<Charge[]>>;
   setLoans: React.Dispatch<React.SetStateAction<Loan[]>>;
   setPayments: React.Dispatch<React.SetStateAction<Payment[]>>;
-  
-  // Client operations
   addClient: (client: Client) => Promise<void>;
   updateClient: (client: Client) => Promise<void>;
   deleteClient: (id: string) => Promise<void>;
-  
-  // Charge operations
   markChargeAsPaid: (chargeId: string) => Promise<void>;
-  
-  // Refresh data
   refreshData: () => Promise<void>;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
+const chargeDueDateKey = (dateString: string) => dateString.split('T')[0];
+
+const syncClientsWithPayments = (clients: Client[], payments: Payment[]): Client[] =>
+  clients.map(client => updateClientFinancialStatus(client, payments));
+
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
+  const { isAuthenticated } = useAuth();
   const [clients, setClients] = useState<Client[]>([]);
   const [charges, setCharges] = useState<Charge[]>([]);
   const [loans, setLoans] = useState<Loan[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [metrics, setMetrics] = useState<FinancialMetrics>({
     carteiraTotal: 0,
     capitalInvestido: 0,
@@ -61,192 +61,248 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   });
   const [isLoading, setIsLoading] = useState(true);
 
-  // Load initial data
-  useEffect(() => {
-    loadData();
-  }, []);
-
-  // Recalculate metrics whenever data changes
-  useEffect(() => {
-    if (!isLoading) {
-      const newMetrics = calculateAllMetrics(clients, charges, loans, payments);
-      setMetrics(newMetrics);
-      
-      const newDashboardData = getDashboardData(charges, payments, clients);
-      setDashboardData(newDashboardData);
-    }
-  }, [clients, charges, loans, payments, isLoading]);
-
-  // Update client financial status when payments change
-  useEffect(() => {
-    if (!isLoading && clients.length > 0) {
-      const updatedClients = clients.map(client => 
-        updateClientFinancialStatus(client, payments)
-      );
-      setClients(updatedClients);
-    }
-  }, [payments, isLoading]);
-
-  // Auto-generate charges for due payments
-  useEffect(() => {
-    if (!isLoading && clients.length > 0) {
-      const newCharges = generateChargesForClients(clients);
-      
-      // Add only charges that don't already exist
-      newCharges.forEach(newCharge => {
-        const exists = charges.some(c => c.id === newCharge.id);
-        if (!exists) {
-          storageService.saveCharge(newCharge);
-          setCharges(prev => [...prev, newCharge]);
-        }
-      });
-    }
-  }, [clients, isLoading]);
-
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     setIsLoading(true);
+    setLoadError(null);
+
     try {
+      await storageService.migrateLocalDataIfNeeded();
+
       const [loadedClients, loadedCharges, loadedLoans, loadedPayments] = await Promise.all([
         storageService.getClients(),
         storageService.getCharges(),
         storageService.getLoans(),
         storageService.getPayments(),
       ]);
-      
-      // Migrate old client data to new structure
+
       const migratedClients = loadedClients.map(migrateClientData);
-      
-      setClients(migratedClients);
+      const syncedClients = syncClientsWithPayments(migratedClients, loadedPayments);
+
+      setClients(syncedClients);
       setCharges(loadedCharges);
       setLoans(loadedLoans);
       setPayments(loadedPayments);
     } catch (error) {
       console.error('Error loading data:', error);
+      setLoadError(mapSupabaseError(error));
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    if (isAuthenticated) {
+      loadData();
+    } else {
+      setClients([]);
+      setCharges([]);
+      setLoans([]);
+      setPayments([]);
+      setLoadError(null);
+      setIsLoading(false);
+    }
+  }, [isAuthenticated, loadData]);
+
+  useEffect(() => {
+    if (!isLoading) {
+      setMetrics(calculateAllMetrics(clients, charges, loans, payments));
+      setDashboardData(getDashboardData(charges, payments, clients));
+    }
+  }, [clients, charges, loans, payments, isLoading]);
+
+  useEffect(() => {
+    if (isLoading || clients.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const generated = generateChargesForClients(clients);
+        if (generated.length === 0) {
+          return;
+        }
+
+        const existingCharges = await storageService.getCharges();
+        const existingKeys = new Set(
+          existingCharges.map(
+            charge => `${charge.clienteId}:${chargeDueDateKey(charge.dataVencimento)}`
+          )
+        );
+
+        const toCreate = generated.filter(
+          charge =>
+            !existingKeys.has(`${charge.clienteId}:${chargeDueDateKey(charge.dataVencimento)}`)
+        );
+
+        for (const charge of toCreate) {
+          if (cancelled) {
+            return;
+          }
+          await storageService.saveCharge(charge);
+        }
+
+        if (toCreate.length > 0 && !cancelled) {
+          const refreshedCharges = await storageService.getCharges();
+          setCharges(refreshedCharges);
+        }
+      } catch (error) {
+        console.error('Error generating charges:', error);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [clients, isLoading]);
 
   const refreshData = async () => {
     await loadData();
   };
 
-  // Client operations
   const addClient = async (client: Client) => {
-    const clientWithCalculations = calculateContractDetails(client);
-    await storageService.saveClient(clientWithCalculations);
-    setClients(prev => [...prev, clientWithCalculations]);
+    try {
+      const clientWithCalculations = calculateContractDetails({
+        ...client,
+        id: storageService.isValidUuid(client.id) ? client.id : generateId(),
+      });
 
-    if (
-      clientWithCalculations.status !== 'quitado' &&
-      clientWithCalculations.parcelasRestantes > 0 &&
-      clientWithCalculations.proximoVencimento
-    ) {
-      const initialCharge: Charge = {
-        id: `${clientWithCalculations.id}-${clientWithCalculations.proximoVencimento.split('T')[0]}`,
-        clienteId: clientWithCalculations.id,
-        clienteNome: clientWithCalculations.nome,
-        valor: clientWithCalculations.valorParcela,
-        dataVencimento: clientWithCalculations.proximoVencimento,
-        status: 'pendente',
-        parcela: clientWithCalculations.parcelasPagas + 1,
-        totalParcelas: clientWithCalculations.parcelasTotais,
-        telefone: clientWithCalculations.telefone,
-      };
-      await storageService.saveCharge(initialCharge);
-      setCharges(prev => [...prev, initialCharge]);
+      await storageService.saveClient(clientWithCalculations);
+      setClients(prev => [...prev, clientWithCalculations]);
+
+      if (isContractActive(clientWithCalculations) && clientWithCalculations.proximoVencimento) {
+        const initialCharge: Charge = {
+          id: `${clientWithCalculations.id}-${clientWithCalculations.proximoVencimento.split('T')[0]}`,
+          clienteId: clientWithCalculations.id,
+          clienteNome: clientWithCalculations.nome,
+          valor: clientWithCalculations.valorParcela,
+          dataVencimento: clientWithCalculations.proximoVencimento,
+          status: 'pendente',
+          parcela: clientWithCalculations.parcelasPagas + 1,
+          totalParcelas: clientWithCalculations.parcelasTotais,
+          telefone: clientWithCalculations.telefone,
+        };
+
+        await storageService.saveCharge(initialCharge);
+        const savedCharges = await storageService.getCharges();
+        const savedCharge = savedCharges.find(
+          charge =>
+            charge.clienteId === initialCharge.clienteId &&
+            chargeDueDateKey(charge.dataVencimento) === chargeDueDateKey(initialCharge.dataVencimento)
+        );
+        setCharges(prev => [...prev, savedCharge ?? initialCharge]);
+      }
+    } catch (error) {
+      throw new Error(mapSupabaseError(error));
     }
   };
 
   const updateClient = async (client: Client) => {
-    const withDetails = calculateContractDetails(client);
-    const clientWithUpdatedStatus = updateClientFinancialStatus(withDetails, payments);
-    await storageService.saveClient(clientWithUpdatedStatus);
-    setClients(prev => prev.map(c => c.id === client.id ? clientWithUpdatedStatus : c));
+    try {
+      const withDetails = calculateContractDetails(client);
+      const clientWithUpdatedStatus = updateClientFinancialStatus(withDetails, payments);
+      await storageService.saveClient(clientWithUpdatedStatus);
+      setClients(prev => prev.map(c => (c.id === client.id ? clientWithUpdatedStatus : c)));
+    } catch (error) {
+      throw new Error(mapSupabaseError(error));
+    }
   };
 
   const deleteClient = async (id: string) => {
-    // Delete all related charges
-    const clientCharges = charges.filter(c => c.clienteId === id);
-    for (const charge of clientCharges) {
-      await storageService.deleteCharge(charge.id);
-    }
-    setCharges(prev => prev.filter(c => c.clienteId !== id));
+    try {
+      const clientCharges = charges.filter(charge => charge.clienteId === id);
+      for (const charge of clientCharges) {
+        await storageService.deleteCharge(charge.id);
+      }
+      setCharges(prev => prev.filter(charge => charge.clienteId !== id));
 
-    // Delete all related payments
-    const clientPayments = payments.filter(p => p.clienteId === id);
-    for (const payment of clientPayments) {
-      await storageService.deletePayment(payment.id);
-    }
-    setPayments(prev => prev.filter(p => p.clienteId !== id));
+      const clientPayments = payments.filter(payment => payment.clienteId === id);
+      for (const payment of clientPayments) {
+        await storageService.deletePayment(payment.id);
+      }
+      setPayments(prev => prev.filter(payment => payment.clienteId !== id));
 
-    // Delete the client
-    await storageService.deleteClient(id);
-    setClients(prev => prev.filter(c => c.id !== id));
+      await storageService.deleteClient(id);
+      setClients(prev => prev.filter(client => client.id !== id));
+    } catch (error) {
+      throw new Error(mapSupabaseError(error));
+    }
   };
 
-  // Charge operations
   const markChargeAsPaid = async (chargeId: string) => {
-    const charge = charges.find(c => c.id === chargeId);
-    if (!charge) return;
+    const charge = charges.find(item => item.id === chargeId);
+    if (!charge) {
+      throw new Error('Cobrança não encontrada.');
+    }
 
-    // Update charge status
-    const updatedCharge: Charge = {
-      ...charge,
-      status: 'pago',
-      dataPagamento: new Date().toISOString(),
-    };
-    await storageService.saveCharge(updatedCharge);
-    setCharges(prev => prev.map(c => c.id === chargeId ? updatedCharge : c));
+    try {
+      const updatedCharge: Charge = {
+        ...charge,
+        status: 'pago',
+        dataPagamento: new Date().toISOString(),
+      };
 
-    // Create payment record
-    const payment: Payment = {
-      id: Date.now().toString(),
-      chargeId: charge.id,
-      clienteId: charge.clienteId,
-      clienteNome: charge.clienteNome,
-      valor: charge.valor,
-      dataPagamento: new Date().toISOString(),
-    };
-    await storageService.savePayment(payment);
-    setPayments(prev => [...prev, payment]);
+      await storageService.saveCharge(updatedCharge);
 
-    // Update client financial status
-    const client = clients.find(c => c.id === charge.clienteId);
-    if (client) {
-      const updatedClient = updateClientFinancialStatus(client, [...payments, payment]);
-      await storageService.saveClient(updatedClient);
-      setClients(prev => prev.map(c => c.id === client.id ? updatedClient : c));
+      const savedCharges = await storageService.getCharges();
+      const persistedCharge =
+        savedCharges.find(
+          item =>
+            item.clienteId === charge.clienteId &&
+            chargeDueDateKey(item.dataVencimento) === chargeDueDateKey(charge.dataVencimento)
+        ) ?? { ...updatedCharge, id: chargeId };
+
+      setCharges(prev =>
+        prev.map(item =>
+          item.clienteId === charge.clienteId &&
+          chargeDueDateKey(item.dataVencimento) === chargeDueDateKey(charge.dataVencimento)
+            ? { ...updatedCharge, id: persistedCharge.id }
+            : item
+        )
+      );
+
+      const payment: Payment = {
+        id: generateId(),
+        chargeId: persistedCharge.id,
+        clienteId: charge.clienteId,
+        clienteNome: charge.clienteNome,
+        valor: charge.valor,
+        dataPagamento: new Date().toISOString(),
+      };
+
+      await storageService.savePayment(payment);
+      const nextPayments = [...payments, payment];
+      setPayments(nextPayments);
+
+      const client = clients.find(item => item.id === charge.clienteId);
+      if (client) {
+        const updatedClient = updateClientFinancialStatus(client, nextPayments);
+        await storageService.saveClient(updatedClient);
+        setClients(prev => prev.map(item => (item.id === client.id ? updatedClient : item)));
+      }
+    } catch (error) {
+      throw new Error(mapSupabaseError(error));
     }
   };
 
   const value: AppContextType = {
-    // Data
     clients,
     charges,
     loans,
     payments,
     metrics,
     dashboardData,
-    
-    // Loading state
     isLoading,
-    
-    // Setters for backup/restore
+    loadError,
     setClients,
     setCharges,
     setLoans,
     setPayments,
-    
-    // Client operations
     addClient,
     updateClient,
     deleteClient,
-    
-    // Charge operations
     markChargeAsPaid,
-    
-    // Refresh data
     refreshData,
   };
 

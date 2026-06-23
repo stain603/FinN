@@ -10,18 +10,19 @@ import {
   Modal,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useLanguage } from "@/contexts/LanguageContext";
 import { useApp } from "@/contexts/AppContext";
 import { useAuth } from "@/contexts/AuthContext";
 import * as storageService from "@/services/storageService";
+import { generateId } from "@/services/storageService";
+import { formatCurrency, migrateClientData } from "@/services/financialMetrics";
 import ConfirmDialog from "@/components/base/confirm-dialog";
-import { formatCurrency } from "@/services/financialMetrics";
+import { Client, Charge, Payment } from "@/types";
 
 export default function PerfilVirtual() {
   const { language, setLanguage, t } = useLanguage();
-  const { clients, charges, loans, payments, isLoading, setClients, setCharges, setLoans, setPayments, metrics } = useApp();
-  const { userName, updatePin, updateName, logout } = useAuth();
+  const { clients, charges, loans, payments, isLoading, metrics, refreshData } = useApp();
+  const { userName, userEmail, updatePassword, updateName, logout } = useAuth();
 
   const [dialogVisible, setDialogVisible] = useState(false);
   const [dialogConfig, setDialogConfig] = useState<{
@@ -31,11 +32,10 @@ export default function PerfilVirtual() {
     destructive?: boolean;
   } | null>(null);
 
-  // Change PIN state
-  const [showChangePinModal, setShowChangePinModal] = useState(false);
-  const [currentPin, setCurrentPin] = useState("");
-  const [newPin, setNewPin] = useState("");
-  const [confirmNewPin, setConfirmNewPin] = useState("");
+  // Change password state
+  const [showChangePasswordModal, setShowChangePasswordModal] = useState(false);
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmNewPassword, setConfirmNewPassword] = useState("");
 
   // Change Name state
   const [showChangeNameModal, setShowChangeNameModal] = useState(false);
@@ -91,7 +91,7 @@ export default function PerfilVirtual() {
 
       const data = JSON.parse(clipboardContent);
       
-      if (!data.clients || !data.charges || !data.loans || !data.payments) {
+      if (!data.clients || !data.charges || !data.payments) {
         setDialogConfig({
           title: t('error'),
           message: t('restoreInvalid'),
@@ -106,15 +106,45 @@ export default function PerfilVirtual() {
         message: t('restoreWarning'),
         onConfirm: async () => {
           try {
-            await AsyncStorage.setItem('@finbolso_clients', JSON.stringify(data.clients));
-            await AsyncStorage.setItem('@finbolso_charges', JSON.stringify(data.charges));
-            await AsyncStorage.setItem('@finbolso_loans', JSON.stringify(data.loans));
-            await AsyncStorage.setItem('@finbolso_payments', JSON.stringify(data.payments));
-            
-            setClients(data.clients);
-            setCharges(data.charges);
-            setLoans(data.loans);
-            setPayments(data.payments);
+            await storageService.clearAllData();
+
+            const clientIdMap = new Map<string, string>();
+            const restoredClients: Client[] = (data.clients as Client[]).map(migrateClientData);
+
+            for (const client of restoredClients) {
+              const newId = generateId();
+              clientIdMap.set(client.id, newId);
+              await storageService.saveClient({ ...client, id: newId });
+            }
+
+            const chargeIdMap = new Map<string, string>();
+            for (const charge of data.charges as Charge[]) {
+              const newClientId = clientIdMap.get(charge.clienteId);
+              if (!newClientId) continue;
+
+              const newChargeId = generateId();
+              chargeIdMap.set(charge.id, newChargeId);
+              await storageService.saveCharge({
+                ...charge,
+                id: newChargeId,
+                clienteId: newClientId,
+              });
+            }
+
+            for (const payment of data.payments as Payment[]) {
+              const newClientId = clientIdMap.get(payment.clienteId);
+              const newChargeId = chargeIdMap.get(payment.chargeId);
+              if (!newClientId || !newChargeId) continue;
+
+              await storageService.savePayment({
+                ...payment,
+                id: generateId(),
+                clienteId: newClientId,
+                chargeId: newChargeId,
+              });
+            }
+
+            await refreshData();
             
             setDialogConfig({
               title: t('success'),
@@ -161,10 +191,7 @@ export default function PerfilVirtual() {
       onConfirm: async () => {
         try {
           await storageService.clearAllData();
-          setClients([]);
-          setCharges([]);
-          setLoans([]);
-          setPayments([]);
+          await refreshData();
           setDialogConfig({
             title: t('success'),
             message: t('dataCleared'),
@@ -185,31 +212,21 @@ export default function PerfilVirtual() {
     setDialogVisible(true);
   };
 
-  const handleChangePin = async () => {
-    if (currentPin.length !== 4 || !/^\d+$/.test(currentPin)) {
+  const handleChangePassword = async () => {
+    if (newPassword.length < 6) {
       setDialogConfig({
         title: t('error'),
-        message: t('pinInvalid'),
+        message: t('passwordMinLength'),
         onConfirm: () => setDialogVisible(false),
       });
       setDialogVisible(true);
       return;
     }
 
-    if (newPin.length !== 4 || !/^\d+$/.test(newPin)) {
+    if (newPassword !== confirmNewPassword) {
       setDialogConfig({
         title: t('error'),
-        message: t('pinInvalid'),
-        onConfirm: () => setDialogVisible(false),
-      });
-      setDialogVisible(true);
-      return;
-    }
-
-    if (newPin !== confirmNewPin) {
-      setDialogConfig({
-        title: t('error'),
-        message: t('pinMismatch'),
+        message: t('passwordMismatch'),
         onConfirm: () => setDialogVisible(false),
       });
       setDialogVisible(true);
@@ -217,14 +234,13 @@ export default function PerfilVirtual() {
     }
 
     try {
-      await updatePin(currentPin, newPin);
-      setShowChangePinModal(false);
-      setCurrentPin("");
-      setNewPin("");
-      setConfirmNewPin("");
+      await updatePassword(newPassword);
+      setShowChangePasswordModal(false);
+      setNewPassword("");
+      setConfirmNewPassword("");
       setDialogConfig({
         title: t('success'),
-        message: t('pinUpdated'),
+        message: t('passwordUpdated'),
         onConfirm: () => setDialogVisible(false),
       });
       setDialogVisible(true);
@@ -296,7 +312,7 @@ export default function PerfilVirtual() {
           <Ionicons name="person" size={60} color="#040814" />
         </View>
         <Text style={styles.userName}>{userName || t('user')}</Text>
-        <Text style={styles.userEmail}>{t('email')}</Text>
+        <Text style={styles.userEmail}>{userEmail || t('notDefined')}</Text>
       </View>
 
       <View style={styles.section}>
@@ -356,12 +372,12 @@ export default function PerfilVirtual() {
 
         <TouchableOpacity 
           style={styles.settingOption}
-          onPress={() => setShowChangePinModal(true)}
+          onPress={() => setShowChangePasswordModal(true)}
         >
           <Ionicons name="lock-closed-outline" size={24} color="#3B82F6" />
           <View style={styles.settingInfo}>
-            <Text style={styles.settingLabel}>{t('changePin')}</Text>
-            <Text style={styles.settingValue}>••••</Text>
+            <Text style={styles.settingLabel}>{t('changePassword')}</Text>
+            <Text style={styles.settingValue}>••••••••</Text>
           </View>
           <Ionicons name="chevron-forward" size={20} color="#6B7280" />
         </TouchableOpacity>
@@ -406,61 +422,44 @@ export default function PerfilVirtual() {
       destructive={dialogConfig?.destructive}
     />
 
-    {/* Change PIN Modal */}
+    {/* Change Password Modal */}
     <Modal
-      visible={showChangePinModal}
+      visible={showChangePasswordModal}
       transparent
       animationType="fade"
       onRequestClose={() => {
-        setShowChangePinModal(false);
-        setCurrentPin("");
-        setNewPin("");
-        setConfirmNewPin("");
+        setShowChangePasswordModal(false);
+        setNewPassword("");
+        setConfirmNewPassword("");
       }}
     >
       <View style={styles.modalOverlay}>
         <View style={styles.modalContainer}>
-          <Text style={styles.modalTitle}>{t('changePin')}</Text>
+          <Text style={styles.modalTitle}>{t('changePassword')}</Text>
           
           <View style={styles.modalInputGroup}>
-            <Text style={styles.modalInputLabel}>{t('enterCurrentPin')}</Text>
+            <Text style={styles.modalInputLabel}>{t('enterNewPassword')}</Text>
             <TextInput
               style={styles.modalInput}
-              placeholder="••••"
+              placeholder="••••••••"
               placeholderTextColor="#6B7280"
-              value={currentPin}
-              onChangeText={setCurrentPin}
-              keyboardType="number-pad"
-              maxLength={4}
+              value={newPassword}
+              onChangeText={setNewPassword}
               secureTextEntry
+              autoCapitalize="none"
             />
           </View>
           
           <View style={styles.modalInputGroup}>
-            <Text style={styles.modalInputLabel}>{t('enterNewPin')}</Text>
+            <Text style={styles.modalInputLabel}>{t('enterConfirmNewPassword')}</Text>
             <TextInput
               style={styles.modalInput}
-              placeholder="••••"
+              placeholder="••••••••"
               placeholderTextColor="#6B7280"
-              value={newPin}
-              onChangeText={setNewPin}
-              keyboardType="number-pad"
-              maxLength={4}
+              value={confirmNewPassword}
+              onChangeText={setConfirmNewPassword}
               secureTextEntry
-            />
-          </View>
-          
-          <View style={styles.modalInputGroup}>
-            <Text style={styles.modalInputLabel}>{t('enterConfirmNewPin')}</Text>
-            <TextInput
-              style={styles.modalInput}
-              placeholder="••••"
-              placeholderTextColor="#6B7280"
-              value={confirmNewPin}
-              onChangeText={setConfirmNewPin}
-              keyboardType="number-pad"
-              maxLength={4}
-              secureTextEntry
+              autoCapitalize="none"
             />
           </View>
           
@@ -468,17 +467,16 @@ export default function PerfilVirtual() {
             <TouchableOpacity
               style={styles.modalCancelButton}
               onPress={() => {
-                setShowChangePinModal(false);
-                setCurrentPin("");
-                setNewPin("");
-                setConfirmNewPin("");
+                setShowChangePasswordModal(false);
+                setNewPassword("");
+                setConfirmNewPassword("");
               }}
             >
               <Text style={styles.modalCancelButtonText}>{t('cancel')}</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.modalConfirmButton}
-              onPress={handleChangePin}
+              onPress={handleChangePassword}
             >
               <Text style={styles.modalConfirmButtonText}>{t('confirm')}</Text>
             </TouchableOpacity>

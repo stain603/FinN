@@ -41,13 +41,19 @@ export default function ReceivableCard() {
   const [displayValue, setDisplayValue] =
     useState("R$ 0");
 
-  // Use useEffect to update displayValue when value changes
   useEffect(() => {
-    const interval = setInterval(() => {
-      setDisplayValue(formatCurrency(Math.floor(value.value)));
-    }, 16); // ~60fps
-    return () => clearInterval(interval);
-  }, []);
+    if (isLoading) return;
+    const target = metrics.valorEmTransito ?? 0;
+    let current = 0;
+    const steps = 40;
+    const increment = Math.max(1, target / steps);
+    const timer = setInterval(() => {
+      current = Math.min(current + increment, target);
+      setDisplayValue(formatCurrency(Math.floor(current)));
+      if (current >= target) clearInterval(timer);
+    }, 45);
+    return () => clearInterval(timer);
+  }, [metrics.valorEmTransito, isLoading]);
 
   useEffect(() => {
     opacity.value = withDelay(
@@ -167,7 +173,7 @@ export default function ReceivableCard() {
 
         <View>
           <Text style={styles.subtitle}>
-            Valor total esperado
+            Saldo devedor ativo
           </Text>
         </View>
 

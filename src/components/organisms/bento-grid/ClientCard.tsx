@@ -6,6 +6,7 @@ import {
   View,
 } from "react-native";
 
+import { Ionicons } from "@expo/vector-icons";
 import { BlurView } from "expo-blur";
 
 import Animated, {
@@ -19,12 +20,14 @@ import Animated, {
 } from "react-native-reanimated";
 
 import { useApp } from "@/contexts/AppContext";
+import { useLanguage } from "@/contexts/LanguageContext";
 
 const AnimatedPressable =
   Animated.createAnimatedComponent(Pressable);
 
 export default function ClientsCard() {
-  const { metrics, isLoading } = useApp();
+  const { metrics } = useApp();
+  const { t } = useLanguage();
   
   const opacity = useSharedValue(0);
   const translateY = useSharedValue(40);
@@ -128,10 +131,8 @@ export default function ClientsCard() {
     }));
 
   // Calculate client stats
-  const emDia = metrics.clientesAtivos - metrics.clientesAtrasados;
-  const adimplencia = metrics.clientesAtivos > 0 
-    ? Math.round((emDia / metrics.clientesAtivos) * 100) 
-    : 0;
+  const emDia = Math.max(0, metrics.clientesAtivos - metrics.clientesAtrasados);
+  const adimplencia = Math.round(metrics.taxaAdimplencia);
   
   const isHealthy = metrics.clientesAtrasados === 0;
 
@@ -205,6 +206,20 @@ export default function ClientsCard() {
             <Text
               style={styles.statLabel}
             >
+              {t('filterPaid')}
+            </Text>
+
+            <Text
+              style={styles.neutral}
+            >
+              {metrics.clientesQuitados}
+            </Text>
+          </View>
+
+          <View>
+            <Text
+              style={styles.statLabel}
+            >
               Adimplência
             </Text>
 
@@ -214,6 +229,22 @@ export default function ClientsCard() {
               {adimplencia}%
             </Text>
           </View>
+        </View>
+
+        <View style={styles.trendRow}>
+          {metrics.clientesAtrasados > 0 ? (
+            <>
+              <Ionicons name="trending-down" size={14} color="#EF4444" />
+              <Text style={styles.trendBad}>
+                {metrics.clientesAtrasados} {t('filterOverdue')}
+              </Text>
+            </>
+          ) : (
+            <>
+              <Ionicons name="trending-up" size={14} color="#22C55E" />
+              <Text style={styles.trendGood}>{t('allUpToDate')}</Text>
+            </>
+          )}
         </View>
 
         <View style={styles.footer}>
@@ -299,6 +330,12 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
 
+  neutral: {
+    color: "#94A3B8",
+    fontSize: 18,
+    fontWeight: "700",
+  },
+
   percent: {
     color: "#60A5FA",
     fontSize: 18,
@@ -308,6 +345,25 @@ const styles = StyleSheet.create({
   footer: {
     flexDirection: "row",
     alignItems: "center",
+  },
+
+  trendRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 4,
+  },
+
+  trendGood: {
+    color: '#4ADE80',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+
+  trendBad: {
+    color: '#F87171',
+    fontSize: 12,
+    fontWeight: '600',
   },
 
   pulse: {

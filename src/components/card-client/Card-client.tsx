@@ -1,19 +1,26 @@
-import React, { useState } from "react";
-import { 
-  View, 
-  Text, 
-  StyleSheet, 
-  TouchableOpacity, 
+import React, { useState, useCallback, memo } from "react";
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
   Linking,
   Modal,
-  ScrollView 
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useLanguage } from "@/contexts/LanguageContext";
 import ConfirmDialog from "@/components/base/confirm-dialog";
-import { formatCurrency } from "@/services/financialMetrics";
+import {
+  formatCurrency,
+  formatDaysUntilDueLabel,
+  getDaysUntilDue,
+  isNewContract,
+  isOverdue,
+} from "@/services/financialMetrics";
+import { normalizePhoneForWhatsApp } from "@/utils/phoneUtils";
+import { copyToClipboard } from "@/utils/clipboardUtils";
+import { triggerLightFeedback } from "@/utils/feedbackUtils";
 
-// Contrato de dados que o card precisa receber para se montar sozinho
 interface CardClienteProps {
   nome: string;
   telefone: string;
@@ -23,11 +30,11 @@ interface CardClienteProps {
   valorParcela: string;
   frequencia: "Diário" | "Semanal" | "Mensal" | "Anual";
   observacao?: string;
+  dataInicio?: string;
   onDelete?: () => void;
   onEdit?: () => void;
   onMarkPayment?: () => void;
   onViewHistory?: () => void;
-  // Campos calculados
   lucroEsperado?: number;
   valorRecebido?: number;
   parcelasTotais?: number;
@@ -38,7 +45,7 @@ interface CardClienteProps {
   status?: "ativo" | "pendente" | "atrasado" | "quitado" | "cancelado";
 }
 
-export default function CardCliente({
+function CardCliente({
   nome,
   telefone,
   endereco,
@@ -47,6 +54,7 @@ export default function CardCliente({
   valorParcela,
   frequencia,
   observacao,
+  dataInicio,
   onDelete,
   lucroEsperado,
   valorRecebido,
@@ -58,12 +66,12 @@ export default function CardCliente({
   status,
   onEdit,
   onMarkPayment,
-  onViewHistory
+  onViewHistory,
 }: CardClienteProps) {
-
   const { t } = useLanguage();
   const [menuVisible, setMenuVisible] = useState(false);
   const [dialogVisible, setDialogVisible] = useState(false);
+  const [copyFeedback, setCopyFeedback] = useState<string | null>(null);
   const [dialogConfig, setDialogConfig] = useState<{
     title: string;
     message: string;
@@ -71,26 +79,21 @@ export default function CardCliente({
     destructive?: boolean;
   } | null>(null);
 
-  // Determine status color
+  const isNew = dataInicio ? isNewContract(dataInicio) : false;
+
   const getStatusColor = () => {
-    if (status === 'quitado') return '#3B82F6'; // Blue
-    if (status === 'atrasado') return '#EF4444'; // Red
-    if (status === 'cancelado') return '#6B7280'; // Gray
-    
-    // Check if due today
+    if (status === 'quitado') return '#3B82F6';
+    if (status === 'atrasado') return '#EF4444';
+    if (status === 'cancelado') return '#6B7280';
+
     if (proximoVencimento) {
       const dueDate = new Date(proximoVencimento);
       const today = new Date();
-      if (dueDate.toDateString() === today.toDateString()) {
-        return '#F59E0B'; // Yellow
-      }
-      // Check if overdue
-      if (dueDate < today && saldoDevedor && saldoDevedor > 0) {
-        return '#EF4444'; // Red
-      }
+      if (dueDate.toDateString() === today.toDateString()) return '#F59E0B';
+      if (dueDate < today && saldoDevedor && saldoDevedor > 0) return '#EF4444';
     }
-    
-    return '#10B981'; // Green - Em dia
+
+    return '#10B981';
   };
 
   const statusColor = getStatusColor();
@@ -100,21 +103,49 @@ export default function CardCliente({
       ? Math.round((parcelasPagas / parcelasTotais) * 100)
       : 0;
 
-  // Função que dispara o WhatsApp nativo com o link dinâmico wa.me
-  const abrirWhatsApp = () => {
-    // Remove qualquer caractere que não seja número do telefone (segurança simples)
-    const telefoneLimpo = telefone.replace(/\D/g, "");
-    
-    // Se o usuário não digitou o código do país (55 para Brasil), nós adicionamos automaticamente
-    const telefoneFormatado = telefoneLimpo.startsWith("55") ? telefoneLimpo : `55${telefoneLimpo}`;
+  const dueLabel = proximoVencimento && status !== 'quitado'
+    ? formatDaysUntilDueLabel(proximoVencimento)
+    : null;
 
-    // Mensagem padrão premium que o sistema vai preencher para o seu usuário
+  const isDueOverdue = proximoVencimento ? isOverdue(proximoVencimento) : false;
+
+  const showCopyFeedback = useCallback((message: string) => {
+    setCopyFeedback(message);
+    setTimeout(() => setCopyFeedback(null), 2000);
+  }, []);
+
+  const handleCopyPhone = useCallback(async () => {
+    const ok = await copyToClipboard(telefone);
+    if (ok) {
+      await triggerLightFeedback();
+      showCopyFeedback(t('phoneCopied'));
+    }
+  }, [telefone, t, showCopyFeedback]);
+
+  const handleCopyAddress = useCallback(async () => {
+    if (!endereco) return;
+    const ok = await copyToClipboard(endereco);
+    if (ok) {
+      await triggerLightFeedback();
+      showCopyFeedback(t('addressCopied'));
+    }
+  }, [endereco, t, showCopyFeedback]);
+
+  const abrirWhatsApp = useCallback(() => {
+    const phone = normalizePhoneForWhatsApp(telefone);
+    if (!phone) {
+      setDialogConfig({
+        title: t('error'),
+        message: t('invalidPhone'),
+        onConfirm: () => setDialogVisible(false),
+      });
+      setDialogVisible(true);
+      return;
+    }
+
     const mensagem = `Olá ${nome}! Passando para lembrar sobre o seu pagamento da parcela de ${valorParcela} (${frequencia}) referente ao serviço contratado.`;
-    
-    // Cria o link oficial da API do WhatsApp
-    const url = `https://wa.me/${telefoneFormatado}?text=${encodeURIComponent(mensagem)}`;
+    const url = `https://wa.me/${phone}?text=${encodeURIComponent(mensagem)}`;
 
-    // Comando nativo que funciona tanto em aplicativos instalados (Android/iOS) quanto na Web
     Linking.openURL(url).catch(() => {
       setDialogConfig({
         title: t('error'),
@@ -123,7 +154,7 @@ export default function CardCliente({
       });
       setDialogVisible(true);
     });
-  };
+  }, [telefone, nome, valorParcela, frequencia, t]);
 
   const handleDelete = () => {
     setDialogConfig({
@@ -138,184 +169,238 @@ export default function CardCliente({
     setDialogVisible(true);
   };
 
+  const handleQuickPayment = async () => {
+    setMenuVisible(false);
+    await triggerLightFeedback();
+    onMarkPayment?.();
+  };
+
   return (
     <>
-    <View style={styles.card}>
-      {/* Linha Superior: Avatar, Nome e Botão de Ação */}
-      <View style={styles.headerRow}>
-        <View style={styles.profileSection}>
-          <View style={styles.avatarContainer}>
-            <View style={styles.avatar}>
-              <Text style={styles.avatarText}>{nome.charAt(0).toUpperCase()}</Text>
+      <View style={[styles.card, isDueOverdue && status !== 'quitado' && styles.cardOverdue]}>
+        {copyFeedback && (
+          <View style={styles.copyFeedback}>
+            <Ionicons name="checkmark-circle" size={14} color="#10B981" />
+            <Text style={styles.copyFeedbackText}>{copyFeedback}</Text>
+          </View>
+        )}
+
+        <View style={styles.headerRow}>
+          <View style={styles.profileSection}>
+            <View style={styles.avatarContainer}>
+              <View style={styles.avatar}>
+                <Text style={styles.avatarText}>{nome.charAt(0).toUpperCase()}</Text>
+              </View>
+              <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
             </View>
-            <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
-          </View>
-          <View style={styles.nameBlock}>
-            <Text style={styles.nomeText} numberOfLines={1}>{nome}</Text>
-            <Text style={styles.tipoText}>{frequencia} • Parcela: <Text style={styles.destaqueVerde}>{valorParcela}</Text></Text>
-          </View>
-        </View>
-
-        {/* Botão de menu */}
-        <TouchableOpacity 
-          style={styles.menuButton} 
-          activeOpacity={0.7}
-          onPress={() => setMenuVisible(true)}
-        >
-          <Ionicons name="ellipsis-horizontal" size={24} color="#9CA3AF" />
-        </TouchableOpacity>
-      </View>
-
-      {/* Meio do Card: Valores e Endereço */}
-      <View style={styles.detailsContainer}>
-        <View style={styles.dataRow}>
-          <View style={styles.dataGroup}>
-            <Text style={styles.dataLabel}>{t('loaned')}</Text>
-            <Text style={styles.dataValue}>{valorEmprestado}</Text>
-          </View>
-
-          <View style={styles.dataGroup}>
-            <Text style={styles.dataLabel}>{t('toReceive')}</Text>
-            <Text style={styles.dataValue}>{valorTotalReceber}</Text>
-          </View>
-        </View>
-
-        <View style={styles.dataRow}>
-          {lucroEsperado !== undefined && (
-            <View style={styles.dataGroup}>
-              <Text style={styles.dataLabel}>{t('profit')}</Text>
-              <Text style={[styles.dataValue, styles.profitValue]}>{formatCurrency(lucroEsperado)}</Text>
-            </View>
-          )}
-
-          {valorRecebido !== undefined && (
-            <View style={styles.dataGroup}>
-              <Text style={styles.dataLabel}>{t('received')}</Text>
-              <Text style={[styles.dataValue, styles.receivedValue]}>{formatCurrency(valorRecebido)}</Text>
-            </View>
-          )}
-        </View>
-      </View>
-
-      {/* Linha de Progresso e Status Financeiro */}
-      {(parcelasTotais !== undefined && parcelasPagas !== undefined) && (
-        <View style={styles.progressContainer}>
-          <View style={styles.progressInfo}>
-            <Text style={styles.progressLabel}>{t('progress')}</Text>
-            <Text style={styles.progressText}>
-              {parcelasPagas} / {parcelasTotais} {t('installments')} • {percentComplete}% {t('completed')}
-            </Text>
-          </View>
-          <View style={styles.progressBar}>
-            <View 
-              style={[
-                styles.progressFill,
-                { width: `${Math.min(100, percentComplete)}%` }
-              ]} 
-            />
-          </View>
-          {parcelasRestantes !== undefined && (
-            <Text style={styles.remainingInstallments}>
-              {parcelasRestantes} {t('remainingInstallments')}
-            </Text>
-          )}
-        </View>
-      )}
-
-      {/* Saldo Devedor e Próximo Vencimento */}
-      {(saldoDevedor !== undefined || proximoVencimento) && (
-        <View style={styles.financialStatus}>
-          {saldoDevedor !== undefined && (
-            <View style={styles.statusItem}>
-              <Text style={styles.statusLabel}>{t('remainingBalance')}</Text>
-              <Text style={[styles.statusValue, saldoDevedor > 0 ? styles.statusValueDebt : styles.statusValuePaid]}>
-                {formatCurrency(saldoDevedor)}
+            <View style={styles.nameBlock}>
+              <View style={styles.nameRow}>
+                <Text style={styles.nomeText} numberOfLines={1}>{nome}</Text>
+                {isNew && (
+                  <View style={styles.newBadge}>
+                    <Text style={styles.newBadgeText}>{t('newContractBadge')}</Text>
+                  </View>
+                )}
+              </View>
+              <Text style={styles.tipoText}>
+                {frequencia} • {t('installmentValue')}: <Text style={styles.destaqueVerde}>{valorParcela}</Text>
               </Text>
             </View>
+          </View>
+
+          <TouchableOpacity
+            style={styles.menuButton}
+            activeOpacity={0.7}
+            onPress={() => setMenuVisible(true)}
+          >
+            <Ionicons name="ellipsis-horizontal" size={24} color="#9CA3AF" />
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.quickActions}>
+          <TouchableOpacity style={styles.quickActionBtn} onPress={handleCopyPhone}>
+            <Ionicons name="copy-outline" size={16} color="#3B82F6" />
+            <Text style={styles.quickActionText}>{t('copyPhone')}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.quickActionBtn} onPress={abrirWhatsApp}>
+            <Ionicons name="logo-whatsapp" size={16} color="#25D366" />
+            <Text style={styles.quickActionText}>WhatsApp</Text>
+          </TouchableOpacity>
+          {endereco ? (
+            <TouchableOpacity style={styles.quickActionBtn} onPress={handleCopyAddress}>
+              <Ionicons name="location-outline" size={16} color="#8B5CF6" />
+              <Text style={styles.quickActionText}>{t('copyAddress')}</Text>
+            </TouchableOpacity>
+          ) : null}
+          {onMarkPayment && status !== 'quitado' && (
+            <TouchableOpacity style={[styles.quickActionBtn, styles.quickActionPay]} onPress={handleQuickPayment}>
+              <Ionicons name="cash-outline" size={16} color="#10B981" />
+              <Text style={[styles.quickActionText, { color: '#10B981' }]}>{t('markPayment')}</Text>
+            </TouchableOpacity>
           )}
-          {proximoVencimento && status !== 'quitado' && (
-            <View style={[styles.statusItem, { alignItems: 'flex-end' }]}>
-              <Text style={styles.statusLabel}>{t('nextDueDate')}</Text>
-              <Text style={styles.statusValue}>
-                {new Date(proximoVencimento).toLocaleDateString('pt-BR')}
+        </View>
+
+        <View style={styles.detailsContainer}>
+          {endereco ? (
+            <Text style={styles.enderecoText} numberOfLines={2}>{endereco}</Text>
+          ) : null}
+          <View style={styles.dataRow}>
+            <View style={styles.dataGroup}>
+              <Text style={styles.dataLabel}>{t('loaned')}</Text>
+              <Text style={styles.dataValue}>{valorEmprestado}</Text>
+            </View>
+            <View style={styles.dataGroup}>
+              <Text style={styles.dataLabel}>{t('toReceive')}</Text>
+              <Text style={styles.dataValue}>{valorTotalReceber}</Text>
+            </View>
+          </View>
+
+          <View style={styles.dataRow}>
+            {lucroEsperado !== undefined && (
+              <View style={styles.dataGroup}>
+                <Text style={styles.dataLabel}>{t('profit')}</Text>
+                <Text style={[styles.dataValue, styles.profitValue]}>{formatCurrency(lucroEsperado)}</Text>
+              </View>
+            )}
+            {valorRecebido !== undefined && (
+              <View style={styles.dataGroup}>
+                <Text style={styles.dataLabel}>{t('received')}</Text>
+                <Text style={[styles.dataValue, styles.receivedValue]}>{formatCurrency(valorRecebido)}</Text>
+              </View>
+            )}
+          </View>
+        </View>
+
+        {(parcelasTotais !== undefined && parcelasPagas !== undefined) && (
+          <View style={styles.progressContainer}>
+            <View style={styles.progressInfo}>
+              <Text style={styles.progressLabel}>{t('progress')}</Text>
+              <Text style={styles.progressText}>
+                {parcelasPagas}/{parcelasTotais} • {percentComplete}%
               </Text>
             </View>
-          )}
-        </View>
-      )}
+            <View style={styles.progressBar}>
+              <View style={[styles.progressFill, { width: `${Math.min(100, percentComplete)}%` }]} />
+            </View>
+            <View style={styles.progressMeta}>
+              {parcelasRestantes !== undefined && (
+                <Text style={styles.remainingInstallments}>
+                  {parcelasRestantes} {t('remainingInstallments')}
+                </Text>
+              )}
+              {dueLabel && (
+                <Text style={[styles.dueLabel, isDueOverdue && styles.dueLabelOverdue]}>
+                  {dueLabel}
+                </Text>
+              )}
+            </View>
+          </View>
+        )}
 
-      {/* Rodapé do Card: Observações (só aparece se o usuário tiver digitado algo) */}
-      {observacao ? (
-        <View style={styles.obsContainer}>
-          <Text style={styles.obsText} numberOfLines={2}>
-            <Text style={{ fontWeight: "700", color: "#6B7280" }}>{t('observations')}: </Text>
-            {observacao}
-          </Text>
-        </View>
-      ) : null}
-    </View>
+        {(saldoDevedor !== undefined || proximoVencimento) && (
+          <View style={styles.financialStatus}>
+            {saldoDevedor !== undefined && (
+              <View style={styles.statusItem}>
+                <Text style={styles.statusLabel}>{t('remainingBalance')}</Text>
+                <Text style={[styles.statusValue, saldoDevedor > 0 ? styles.statusValueDebt : styles.statusValuePaid]}>
+                  {formatCurrency(saldoDevedor)}
+                </Text>
+              </View>
+            )}
+            {proximoVencimento && status !== 'quitado' && (
+              <View style={[styles.statusItem, { alignItems: 'flex-end' }]}>
+                <Text style={styles.statusLabel}>{t('nextDueDate')}</Text>
+                <Text style={[styles.statusValue, isDueOverdue && styles.statusValueDebt]}>
+                  {new Date(proximoVencimento).toLocaleDateString('pt-BR')}
+                </Text>
+                {proximoVencimento && (
+                  <Text style={[styles.daysCounter, isDueOverdue && styles.daysCounterOverdue]}>
+                    {getDaysUntilDue(proximoVencimento) >= 0
+                      ? `${getDaysUntilDue(proximoVencimento)}d`
+                      : `${Math.abs(getDaysUntilDue(proximoVencimento))}d atraso`}
+                  </Text>
+                )}
+              </View>
+            )}
+          </View>
+        )}
 
-    {/* Menu Modal */}
-    <Modal
-      visible={menuVisible}
-      transparent={true}
-      animationType="fade"
-      onRequestClose={() => setMenuVisible(false)}
-    >
-      <TouchableOpacity 
-        style={styles.menuOverlay} 
-        activeOpacity={1} 
-        onPress={() => setMenuVisible(false)}
+        {observacao ? (
+          <View style={styles.obsContainer}>
+            <Text style={styles.obsText} numberOfLines={2}>
+              <Text style={{ fontWeight: "700", color: "#6B7280" }}>{t('observations')}: </Text>
+              {observacao}
+            </Text>
+          </View>
+        ) : null}
+      </View>
+
+      <Modal
+        visible={menuVisible}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setMenuVisible(false)}
       >
-        <View style={styles.menuContainer}>
-          <TouchableOpacity style={styles.menuItem} onPress={() => { setMenuVisible(false); onEdit?.(); }}>
-            <Ionicons name="create-outline" size={20} color="#3B82F6" />
-            <Text style={styles.menuItemText}>{t('edit')}</Text>
-          </TouchableOpacity>
-          {onMarkPayment && (
-            <TouchableOpacity style={styles.menuItem} onPress={() => { setMenuVisible(false); onMarkPayment(); }}>
-              <Ionicons name="cash-outline" size={20} color="#10B981" />
-              <Text style={styles.menuItemText}>{t('markPayment')}</Text>
+        <TouchableOpacity
+          style={styles.menuOverlay}
+          activeOpacity={1}
+          onPress={() => setMenuVisible(false)}
+        >
+          <View style={styles.menuContainer}>
+            <TouchableOpacity style={styles.menuItem} onPress={() => { setMenuVisible(false); onEdit?.(); }}>
+              <Ionicons name="create-outline" size={20} color="#3B82F6" />
+              <Text style={styles.menuItemText}>{t('edit')}</Text>
             </TouchableOpacity>
-          )}
-          <TouchableOpacity style={styles.menuItem} onPress={() => { setMenuVisible(false); abrirWhatsApp(); }}>
-            <Ionicons name="logo-whatsapp" size={20} color="#25D366" />
-            <Text style={styles.menuItemText}>WhatsApp</Text>
-          </TouchableOpacity>
-          {onViewHistory && (
-            <TouchableOpacity style={styles.menuItem} onPress={() => { setMenuVisible(false); onViewHistory(); }}>
-              <Ionicons name="list-outline" size={20} color="#8B5CF6" />
-              <Text style={styles.menuItemText}>{t('paymentHistory')}</Text>
+            {onMarkPayment && status !== 'quitado' && (
+              <TouchableOpacity style={styles.menuItem} onPress={handleQuickPayment}>
+                <Ionicons name="cash-outline" size={20} color="#10B981" />
+                <Text style={styles.menuItemText}>{t('markPayment')}</Text>
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity style={styles.menuItem} onPress={() => { setMenuVisible(false); abrirWhatsApp(); }}>
+              <Ionicons name="logo-whatsapp" size={20} color="#25D366" />
+              <Text style={styles.menuItemText}>WhatsApp</Text>
             </TouchableOpacity>
-          )}
-          {onDelete && (
-            <TouchableOpacity style={styles.menuItem} onPress={() => { setMenuVisible(false); handleDelete(); }}>
-              <Ionicons name="trash-outline" size={20} color="#EF4444" />
-              <Text style={styles.menuItemText}>{t('delete')}</Text>
+            <TouchableOpacity style={styles.menuItem} onPress={() => { setMenuVisible(false); handleCopyPhone(); }}>
+              <Ionicons name="copy-outline" size={20} color="#3B82F6" />
+              <Text style={styles.menuItemText}>{t('copyPhone')}</Text>
             </TouchableOpacity>
-          )}
-        </View>
-      </TouchableOpacity>
-    </Modal>
+            {onViewHistory && (
+              <TouchableOpacity style={styles.menuItem} onPress={() => { setMenuVisible(false); onViewHistory(); }}>
+                <Ionicons name="list-outline" size={20} color="#8B5CF6" />
+                <Text style={styles.menuItemText}>{t('paymentHistory')}</Text>
+              </TouchableOpacity>
+            )}
+            {onDelete && (
+              <TouchableOpacity style={styles.menuItem} onPress={() => { setMenuVisible(false); handleDelete(); }}>
+                <Ionicons name="trash-outline" size={20} color="#EF4444" />
+                <Text style={styles.menuItemText}>{t('delete')}</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        </TouchableOpacity>
+      </Modal>
 
-    <ConfirmDialog
-      visible={dialogVisible}
-      title={dialogConfig?.title || ''}
-      message={dialogConfig?.message || ''}
-      onConfirm={() => {
-        dialogConfig?.onConfirm();
-        setDialogVisible(false);
-      }}
-      onCancel={() => setDialogVisible(false)}
-      destructive={dialogConfig?.destructive}
-    />
+      <ConfirmDialog
+        visible={dialogVisible}
+        title={dialogConfig?.title || ''}
+        message={dialogConfig?.message || ''}
+        onConfirm={() => {
+          dialogConfig?.onConfirm();
+          setDialogVisible(false);
+        }}
+        onCancel={() => setDialogVisible(false)}
+        destructive={dialogConfig?.destructive}
+      />
     </>
   );
 }
 
+export default memo(CardCliente);
+
 const styles = StyleSheet.create({
   card: {
-    backgroundColor: "#0B1329", // Cor escura dos cards premium
+    backgroundColor: "#0B1329",
     borderRadius: 20,
     padding: 16,
     marginBottom: 14,
@@ -326,6 +411,25 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.2,
     shadowRadius: 5,
     elevation: 3,
+  },
+  cardOverdue: {
+    borderColor: 'rgba(239, 68, 68, 0.25)',
+    backgroundColor: 'rgba(239, 68, 68, 0.04)',
+  },
+  copyFeedback: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(16, 185, 129, 0.12)',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    marginBottom: 10,
+  },
+  copyFeedbackText: {
+    color: '#10B981',
+    fontSize: 12,
+    fontWeight: '600',
   },
   headerRow: {
     flexDirection: "row",
@@ -349,7 +453,7 @@ const styles = StyleSheet.create({
     width: 46,
     height: 46,
     borderRadius: 23,
-    backgroundColor: "rgba(37, 99, 235, 0.12)", // Fundo azul translúcido
+    backgroundColor: "rgba(37, 99, 235, 0.12)",
     justifyContent: "center",
     alignItems: "center",
   },
@@ -371,10 +475,30 @@ const styles = StyleSheet.create({
   nameBlock: {
     flex: 1,
   },
+  nameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
   nomeText: {
     color: "#FFFFFF",
     fontSize: 16,
     fontWeight: "700",
+    flexShrink: 1,
+  },
+  newBadge: {
+    backgroundColor: 'rgba(37, 99, 235, 0.2)',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(37, 99, 235, 0.4)',
+  },
+  newBadgeText: {
+    color: '#60A5FA',
+    fontSize: 10,
+    fontWeight: '700',
   },
   tipoText: {
     color: "#9CA3AF",
@@ -382,60 +506,37 @@ const styles = StyleSheet.create({
     marginTop: 3,
   },
   destaqueVerde: {
-    color: "#10B981", // Valor da parcela em verde neon discreto
+    color: "#10B981",
     fontWeight: "700",
   },
-  actionButtons: {
-    flexDirection: "row",
+  quickActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 8,
+    marginTop: 12,
   },
-  editButton: {
-    backgroundColor: "rgba(59, 130, 246, 0.15)",
-    width: 40,
-    height: 40,
-    borderRadius: 14,
-    justifyContent: "center",
-    alignItems: "center",
+  quickActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: "rgba(59, 130, 246, 0.3)",
+    borderColor: 'rgba(255, 255, 255, 0.06)',
   },
-  paymentButton: {
-    backgroundColor: "rgba(16, 185, 129, 0.15)",
-    width: 40,
-    height: 40,
-    borderRadius: 14,
-    justifyContent: "center",
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: "rgba(16, 185, 129, 0.3)",
+  quickActionPay: {
+    borderColor: 'rgba(16, 185, 129, 0.25)',
+    backgroundColor: 'rgba(16, 185, 129, 0.08)',
   },
-  historyButton: {
-    backgroundColor: "rgba(139, 92, 246, 0.15)",
-    width: 40,
-    height: 40,
-    borderRadius: 14,
-    justifyContent: "center",
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: "rgba(139, 92, 246, 0.3)",
+  quickActionText: {
+    color: '#9CA3AF',
+    fontSize: 11,
+    fontWeight: '600',
   },
-  deleteButton: {
-    backgroundColor: "rgba(239, 68, 68, 0.15)",
-    width: 40,
-    height: 40,
-    borderRadius: 14,
-    justifyContent: "center",
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: "rgba(239, 68, 68, 0.3)",
-  },
-  whatsappButton: {
-    backgroundColor: "#10B981", // Verde do WhatsApp
-    width: 40,
-    height: 40,
-    borderRadius: 14,
-    justifyContent: "center",
-    alignItems: "center",
+  menuButton: {
+    padding: 8,
   },
   detailsContainer: {
     marginTop: 12,
@@ -470,11 +571,9 @@ const styles = StyleSheet.create({
   enderecoText: {
     color: "#9CA3AF",
     fontSize: 13,
-    textAlign: "right",
-    maxWidth: "100%",
   },
   obsContainer: {
-    backgroundColor: "rgba(4, 8, 20, 0.4)", // Caixa cinza escura para as observações
+    backgroundColor: "rgba(4, 8, 20, 0.4)",
     borderRadius: 10,
     padding: 10,
     marginTop: 12,
@@ -505,21 +604,34 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   progressBar: {
-    height: 6,
+    height: 8,
     backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 3,
+    borderRadius: 4,
     overflow: 'hidden',
   },
   progressFill: {
     height: '100%',
     backgroundColor: '#3B82F6',
-    borderRadius: 3,
+    borderRadius: 4,
+  },
+  progressMeta: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 6,
   },
   remainingInstallments: {
     color: '#6B7280',
     fontSize: 11,
-    marginTop: 6,
     fontWeight: '500',
+  },
+  dueLabel: {
+    color: '#9CA3AF',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  dueLabelOverdue: {
+    color: '#EF4444',
   },
   financialStatus: {
     flexDirection: 'row',
@@ -550,8 +662,14 @@ const styles = StyleSheet.create({
   statusValuePaid: {
     color: '#10B981',
   },
-  menuButton: {
-    padding: 8,
+  daysCounter: {
+    color: '#6B7280',
+    fontSize: 10,
+    fontWeight: '600',
+    marginTop: 2,
+  },
+  daysCounterOverdue: {
+    color: '#EF4444',
   },
   menuOverlay: {
     flex: 1,

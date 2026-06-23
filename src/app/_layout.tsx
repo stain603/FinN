@@ -33,6 +33,11 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 
     const onLoginScreen = pathname === "/" || pathname === "/index";
 
+    if (isAuthenticated && onLoginScreen) {
+      router.replace("/(first)");
+      return;
+    }
+
     if (!isAuthenticated && !onLoginScreen) {
       router.replace("/");
     }

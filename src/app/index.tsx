@@ -1,26 +1,27 @@
 import React, { useState, useEffect } from "react";
 import { View, StyleSheet, Text, TextInput, TouchableOpacity } from "react-native";
 import { useRouter } from "expo-router";
-import OtpInput from "../components/base/otp-input";
 import StaggeredText from "../components/organisms/animated-text";
 import ConfirmDialog from "@/components/base/confirm-dialog";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { useAuth } from "@/contexts/AuthContext";
+import { mapAuthError } from "@/utils/authErrors";
+
+type AuthMode = "login" | "signup";
 
 export default function Login() {
   const router = useRouter();
   const { t } = useLanguage();
-  const { user, isAuthenticated, isLoading, login, createUser, switchAccount } = useAuth();
-  
+  const { isAuthenticated, isLoading, login, signUp } = useAuth();
+
+  const [mode, setMode] = useState<AuthMode>("login");
   const [nome, setNome] = useState("");
-  const [pin, setPin] = useState("");
-  const [confirmPin, setConfirmPin] = useState("");
-  const [error, setError] = useState(false);
-  const [showPin, setShowPin] = useState(false);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [pinInputKey, setPinInputKey] = useState(0);
-  const [confirmPinInputKey, setConfirmPinInputKey] = useState(0);
-  
+
   const [dialogVisible, setDialogVisible] = useState(false);
   const [dialogConfig, setDialogConfig] = useState<{
     title: string;
@@ -29,263 +30,213 @@ export default function Login() {
     destructive?: boolean;
   } | null>(null);
 
-  // Redirect if already authenticated
   useEffect(() => {
-    if (isAuthenticated) {
+    if (isAuthenticated && !isLoading) {
       router.replace("/(first)");
     }
-  }, [isAuthenticated]);
+  }, [isAuthenticated, isLoading, router]);
 
-  const handlePinChange = (value: string) => {
-    setPin(value);
-    if (error) {
-      setError(false);
-    }
+  const showError = (message: string) => {
+    setDialogConfig({
+      title: t("error"),
+      message,
+      onConfirm: () => setDialogVisible(false),
+    });
+    setDialogVisible(true);
   };
 
-  const handleConfirmPinChange = (value: string) => {
-    setConfirmPin(value);
-    if (error) {
-      setError(false);
-    }
-  };
+  const validateEmail = (value: string) =>
+    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 
-  const resetPinInput = () => {
-    setPin("");
-    setError(false);
-    setPinInputKey((key) => key + 1);
-  };
-
-  const handleFinalizarCadastro = async () => {
-    // Validation
+  const handleSignUp = async () => {
     if (!nome.trim()) {
-      setError(true);
-      setDialogConfig({
-        title: t('error'),
-        message: t('userNameRequired'),
-        onConfirm: () => setDialogVisible(false),
-      });
-      setDialogVisible(true);
+      showError(t("userNameRequired"));
       return;
     }
 
-    if (pin.length !== 4 || !/^\d+$/.test(pin)) {
-      setError(true);
-      setDialogConfig({
-        title: t('error'),
-        message: t('pinInvalid'),
-        onConfirm: () => setDialogVisible(false),
-      });
-      setDialogVisible(true);
+    if (!validateEmail(email)) {
+      showError(t("invalidEmail"));
       return;
     }
 
-    if (pin !== confirmPin) {
-      setError(true);
-      setDialogConfig({
-        title: t('error'),
-        message: t('pinMismatch'),
-        onConfirm: () => setDialogVisible(false),
-      });
-      setDialogVisible(true);
+    if (password.length < 6) {
+      showError(t("passwordMinLength"));
+      return;
+    }
+
+    if (password !== confirmPassword) {
+      showError(t("passwordMismatch"));
       return;
     }
 
     setIsSubmitting(true);
     try {
-      await createUser(nome.trim(), pin);
-      router.replace("/(first)");
-    } catch (error: any) {
-      setError(true);
-      setDialogConfig({
-        title: t('error'),
-        message: error.message || t('error'),
-        onConfirm: () => setDialogVisible(false),
-      });
-      setDialogVisible(true);
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
+      const result = await signUp(nome.trim(), email.trim(), password);
 
-  const handleAcessoDiretoPin = async () => {
-    if (pin.length !== 4 || !/^\d+$/.test(pin)) {
-      setError(true);
-      setDialogConfig({
-        title: t('error'),
-        message: t('pinInvalid'),
-        onConfirm: () => setDialogVisible(false),
-      });
-      setDialogVisible(true);
-      return;
-    }
-
-    setIsSubmitting(true);
-    try {
-      const success = await login(pin);
-      if (success) {
-        router.replace("/(first)");
-      } else {
-        resetPinInput();
-        setError(true);
+      if (result === 'email_confirmation_required') {
+        showError(t("confirmEmailMessage"));
+        setMode("login");
+        return;
       }
     } catch (error: any) {
-      resetPinInput();
-      setError(true);
-      setDialogConfig({
-        title: t('error'),
-        message: error.message || t('error'),
-        onConfirm: () => setDialogVisible(false),
-      });
-      setDialogVisible(true);
+      showError(error?.message || mapAuthError(error));
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  const handleSwitchAccount = async () => {
+  const handleLogin = async () => {
+    if (!validateEmail(email)) {
+      showError(t("invalidEmail"));
+      return;
+    }
+
+    if (!password) {
+      showError(t("passwordRequired"));
+      return;
+    }
+
+    setIsSubmitting(true);
     try {
-      setIsSubmitting(true);
-      await switchAccount();
-      setNome("");
-      setPin("");
-      setConfirmPin("");
-      setError(false);
-      setPinInputKey((key) => key + 1);
-      setConfirmPinInputKey((key) => key + 1);
-    } catch {
-      setDialogConfig({
-        title: t('error'),
-        message: t('error'),
-        onConfirm: () => setDialogVisible(false),
-      });
-      setDialogVisible(true);
+      await login(email.trim(), password);
+    } catch (error: any) {
+      showError(error?.message || mapAuthError(error));
     } finally {
       setIsSubmitting(false);
     }
+  };
+
+  const toggleMode = () => {
+    setMode((current) => (current === "login" ? "signup" : "login"));
+    setPassword("");
+    setConfirmPassword("");
   };
 
   if (isLoading) {
     return (
       <View style={styles.container}>
-        <Text style={styles.loadingText}>{t('loading')}</Text>
+        <Text style={styles.loadingText}>{t("loading")}</Text>
       </View>
     );
   }
 
   return (
     <View style={styles.container}>
-      {/* Luzes dinâmicas de fundo */}
       <View style={[styles.blurAmbient, styles.posTop]} />
       <View style={[styles.blurAmbient, styles.posBottom]} />
 
       <View style={styles.cardContainer}>
-        
-        {/* MODO 1: CADASTRO INICIAL */}
-        {!user ? (
-          <View style={styles.premiumCard}>
-            <Text style={styles.title}>{t('loginTitle')}</Text>
-            <Text style={styles.description}>{t('loginDescription')}</Text>
+        <View style={styles.premiumCard}>
+          {mode === "signup" ? (
+            <>
+              <Text style={styles.title}>{t("signupTitle")}</Text>
+              <Text style={styles.description}>{t("loginDescription")}</Text>
 
+              <View style={styles.inputGroup}>
+                <Text style={styles.tagLabel}>{t("userNameLabel")}</Text>
+                <TextInput
+                  style={styles.textInput}
+                  placeholder={t("userNamePlaceholder")}
+                  placeholderTextColor="#4B5563"
+                  value={nome}
+                  onChangeText={setNome}
+                  autoCapitalize="words"
+                />
+              </View>
+            </>
+          ) : (
+            <>
+              <StaggeredText text={t("welcomeBack")} style={styles.title} />
+              <Text style={styles.description}>{t("loginSubtitle")}</Text>
+            </>
+          )}
+
+          <View style={styles.inputGroup}>
+            <Text style={styles.tagLabel}>{t("emailLabel")}</Text>
+            <TextInput
+              style={styles.textInput}
+              placeholder={t("emailPlaceholder")}
+              placeholderTextColor="#4B5563"
+              value={email}
+              onChangeText={setEmail}
+              autoCapitalize="none"
+              keyboardType="email-address"
+              autoComplete="email"
+            />
+          </View>
+
+          <View style={styles.inputGroup}>
+            <Text style={styles.tagLabel}>{t("passwordLabel")}</Text>
+            <View style={styles.passwordRow}>
+              <TextInput
+                style={[styles.textInput, styles.passwordInput]}
+                placeholder={t("passwordPlaceholder")}
+                placeholderTextColor="#4B5563"
+                value={password}
+                onChangeText={setPassword}
+                secureTextEntry={!showPassword}
+                autoCapitalize="none"
+                autoComplete={mode === "signup" ? "new-password" : "password"}
+              />
+              <TouchableOpacity
+                style={styles.showPasswordButton}
+                onPress={() => setShowPassword((current) => !current)}
+              >
+                <Text style={styles.showPasswordText}>
+                  {showPassword ? t("hidePin") : t("showPin")}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {mode === "signup" && (
             <View style={styles.inputGroup}>
-              <Text style={styles.tagLabel}>{t('userNameLabel')}</Text>
+              <Text style={styles.tagLabel}>{t("confirmPasswordLabel")}</Text>
               <TextInput
                 style={styles.textInput}
-                placeholder={t('userNamePlaceholder')}
+                placeholder={t("confirmPasswordPlaceholder")}
                 placeholderTextColor="#4B5563"
-                value={nome}
-                onChangeText={setNome}
-                autoCapitalize="words"
+                value={confirmPassword}
+                onChangeText={setConfirmPassword}
+                secureTextEntry={!showPassword}
+                autoCapitalize="none"
+                autoComplete="new-password"
               />
             </View>
+          )}
 
-            <View style={styles.inputGroup}>
-              <Text style={styles.tagLabel}>{t('createPinLabel')}</Text>
-              <View style={styles.otpWrapper}>
-                <OtpInput
-                  key={`register-pin-${pinInputKey}`}
-                  otpCount={4}
-                  onInputChange={handlePinChange}
-                  error={error}
-                  errorMessage={t('pinInvalid')}
-                />
-              </View>
-            </View>
-
-            <View style={styles.inputGroup}>
-              <Text style={styles.tagLabel}>{t('confirmPinLabel')}</Text>
-              <View style={styles.otpWrapper}>
-                <OtpInput
-                  key={`register-confirm-${confirmPinInputKey}`}
-                  otpCount={4}
-                  onInputChange={handleConfirmPinChange}
-                  error={error}
-                  errorMessage={t('pinMismatch')}
-                />
-              </View>
-            </View>
-
-            <TouchableOpacity 
-              style={[styles.submitButton, isSubmitting && styles.submitButtonDisabled]} 
-              onPress={handleFinalizarCadastro}
-              disabled={isSubmitting}
-            >
-              <Text style={styles.submitText}>
-                {isSubmitting ? t('creatingAccount') : t('registerButton')}
-              </Text>
-            </TouchableOpacity>
-          </View>
-        ) : (
-          
-          /* MODO 2: USUÁRIO JÁ CADASTRADO */
-          <View style={styles.premiumCard}>
-            <StaggeredText text={t('welcomeBack')} style={styles.title} />
-            <Text style={styles.description}>{t('welcomeMessage', { name: user.nome || t('user') })}</Text>
-
-            <View style={styles.inputGroupCenter}>
-              <Text style={styles.tagLabelCenter}>{t('enterSecurityPin')}</Text>
-              <View style={styles.otpWrapper}>
-                <OtpInput
-                  key={`login-pin-${pinInputKey}`}
-                  otpCount={4}
-                  onInputChange={handlePinChange}
-                  error={error}
-                  errorMessage={t('pinIncorrect')}
-                  editable={!isSubmitting}
-                />
-              </View>
-            </View>
-
-            <TouchableOpacity 
-              style={[styles.submitButton, isSubmitting && styles.submitButtonDisabled]} 
-              onPress={handleAcessoDiretoPin}
-              disabled={isSubmitting}
-            >
-              <Text style={styles.submitText}>
-                {isSubmitting ? t('validatingPin') : t('confirmPinButton')}
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity 
-              style={styles.resetButton} 
-              onPress={handleSwitchAccount}
-              disabled={isSubmitting}
-            >
-              <Text style={styles.resetText}>{t('switchAccount')}</Text>
-            </TouchableOpacity>
-
-            <Text style={styles.legalWarning}>
-              Esta plataforma é destinada exclusivamente ao gerenciamento e organização de informações financeiras. O sistema não realiza empréstimos, não processa pagamentos e não participa de transações entre usuários e terceiros. O usuário é integralmente responsável pelo uso da plataforma e pelo cumprimento das leis aplicáveis.
+          <TouchableOpacity
+            style={[styles.submitButton, isSubmitting && styles.submitButtonDisabled]}
+            onPress={mode === "signup" ? handleSignUp : handleLogin}
+            disabled={isSubmitting}
+          >
+            <Text style={styles.submitText}>
+              {isSubmitting
+                ? mode === "signup"
+                  ? t("creatingAccount")
+                  : t("signingIn")
+                : mode === "signup"
+                  ? t("registerButton")
+                  : t("signInButton")}
             </Text>
-          </View>
-        )}
+          </TouchableOpacity>
 
+          <TouchableOpacity style={styles.resetButton} onPress={toggleMode} disabled={isSubmitting}>
+            <Text style={styles.resetText}>
+              {mode === "signup" ? t("alreadyHaveAccount") : t("dontHaveAccount")}
+            </Text>
+          </TouchableOpacity>
+
+          <Text style={styles.legalWarning}>
+            Esta plataforma é destinada exclusivamente ao gerenciamento e organização de informações financeiras. O sistema não realiza empréstimos, não processa pagamentos e não participa de transações entre usuários e terceiros. O usuário é integralmente responsável pelo uso da plataforma e pelo cumprimento das leis aplicáveis.
+          </Text>
+        </View>
       </View>
 
       <ConfirmDialog
         visible={dialogVisible}
-        title={dialogConfig?.title || ''}
-        message={dialogConfig?.message || ''}
+        title={dialogConfig?.title || ""}
+        message={dialogConfig?.message || ""}
         onConfirm={() => {
           dialogConfig?.onConfirm();
           setDialogVisible(false);
@@ -300,7 +251,7 @@ export default function Login() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#040814", // Fundo profundo vivo
+    backgroundColor: "#040814",
     justifyContent: "center",
     paddingHorizontal: 24,
   },
@@ -356,23 +307,11 @@ const styles = StyleSheet.create({
     marginBottom: 20,
     width: "100%",
   },
-  inputGroupCenter: {
-    marginBottom: 24,
-    alignItems: "center",
-    width: "100%",
-  },
   tagLabel: {
     color: "#4B5563",
     fontSize: 11,
     fontWeight: "700",
     marginBottom: 8,
-    letterSpacing: 0.8,
-  },
-  tagLabelCenter: {
-    color: "#4B5563",
-    fontSize: 11,
-    fontWeight: "700",
-    marginBottom: 16,
     letterSpacing: 0.8,
   },
   textInput: {
@@ -384,10 +323,21 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255, 255, 255, 0.09)",
     fontSize: 15,
   },
-  otpWrapper: {
-    alignItems: "center",
-    justifyContent: "center",
-    width: "100%",
+  passwordRow: {
+    position: "relative",
+  },
+  passwordInput: {
+    paddingRight: 72,
+  },
+  showPasswordButton: {
+    position: "absolute",
+    right: 12,
+    top: 16,
+  },
+  showPasswordText: {
+    color: "#3B82F6",
+    fontSize: 12,
+    fontWeight: "600",
   },
   submitButton: {
     backgroundColor: "#2563EB",
@@ -422,8 +372,8 @@ const styles = StyleSheet.create({
     marginTop: 24,
     paddingHorizontal: 20,
     fontSize: 10,
-    color: '#6B7280',
-    textAlign: 'center',
+    color: "#6B7280",
+    textAlign: "center",
     lineHeight: 14,
   },
 });

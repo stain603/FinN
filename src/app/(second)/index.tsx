@@ -16,21 +16,30 @@ import { Ionicons } from "@expo/vector-icons";
 import CardCliente from "../../components/card-client/Card-client";
 import PaymentHistoryModal from "../../components/payment-history-modal/PaymentHistoryModal";
 import ConfirmDialog from "../../components/base/confirm-dialog";
+import LoadingView from "../../components/base/loading-view";
+import FeedbackBanner from "../../components/base/feedback-banner";
 import { useApp } from "@/contexts/AppContext";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { Client } from "@/types";
 import { useCurrencyInput } from "@/hooks/useCurrencyInput";
-import { formatCurrency, validateParcelasJaPagas } from "@/services/financialMetrics";
+import { formatCurrency, validateParcelasJaPagas, validateContractFinancials } from "@/services/financialMetrics";
+import { formatPhoneInput, validatePhone, phoneMatchesSearch } from "@/utils/phoneUtils";
+import { triggerSuccessFeedback } from "@/utils/feedbackUtils";
+
+type StatusFilter = 'all' | 'ativo' | 'atrasado' | 'quitado' | 'cancelado';
 
 export default function Costumer() {
-  const { clients, addClient, deleteClient, updateClient, charges, markChargeAsPaid, payments, isLoading } = useApp();
+  const { clients, addClient, deleteClient, updateClient, charges, markChargeAsPaid, payments, isLoading, loadError, refreshData } = useApp();
   const { t } = useLanguage();
   const [busca, setBusca] = useState("");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [isSaving, setIsSaving] = useState(false);
   const [modalVisivel, setModalVisivel] = useState(false);
   const [paymentHistoryVisible, setPaymentHistoryVisible] = useState(false);
   const [selectedClient, setSelectedClient] = useState<Client | null>(null);
   const [isEditMode, setIsEditMode] = useState(false);
   const [dialogVisible, setDialogVisible] = useState(false);
+  const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
   const [dialogConfig, setDialogConfig] = useState<{
     title: string;
     message: string;
@@ -49,12 +58,27 @@ export default function Costumer() {
   const [parcelasJaPagas, setParcelasJaPagas] = useState("0");
   const [observacao, setObservacao] = useState("");
 
-  const clientesFiltrados = useMemo(() => 
-    clients.filter(cliente =>
-      cliente.nome.toLowerCase().includes(busca.toLowerCase())
-    ),
-    [clients, busca]
+  const contratosAtivos = useMemo(
+    () => clients.filter(client => client.status !== 'quitado' && client.status !== 'cancelado').length,
+    [clients]
   );
+
+  const clientesFiltrados = useMemo(() => {
+    const query = busca.trim().toLowerCase();
+
+    return clients.filter(cliente => {
+      const matchesSearch =
+        !query ||
+        cliente.nome.toLowerCase().includes(query) ||
+        phoneMatchesSearch(cliente.telefone, busca) ||
+        (cliente.observacao?.toLowerCase().includes(query) ?? false);
+
+      const matchesStatus =
+        statusFilter === 'all' || cliente.status === statusFilter;
+
+      return matchesSearch && matchesStatus;
+    });
+  }, [clients, busca, statusFilter]);
 
   const handleDeleteClient = useCallback(async (clientId: string) => {
     await deleteClient(clientId);
@@ -113,9 +137,57 @@ export default function Costumer() {
       return;
     }
 
-    const parcelasTotaisPreview = Math.floor(
-      valorTotalReceberInput.getNumericValue() / valorParcelaInput.getNumericValue()
+    if (!validatePhone(telefone)) {
+      setDialogConfig({
+        title: t('error'),
+        message: t('invalidPhone'),
+        onConfirm: () => setDialogVisible(false),
+      });
+      setDialogVisible(true);
+      return;
+    }
+
+    const valorEmprestado = valorEmprestadoInput.getNumericValue();
+    const valorTotalReceber = valorTotalReceberInput.getNumericValue();
+    const valorParcela = valorParcelaInput.getNumericValue();
+
+    const contractError = validateContractFinancials(
+      valorEmprestado,
+      valorTotalReceber,
+      valorParcela
     );
+
+    if (contractError === 'totalLessThanLoan') {
+      setDialogConfig({
+        title: t('error'),
+        message: t('totalLessThanLoan'),
+        onConfirm: () => setDialogVisible(false),
+      });
+      setDialogVisible(true);
+      return;
+    }
+
+    if (contractError === 'installmentTooHigh') {
+      setDialogConfig({
+        title: t('error'),
+        message: t('installmentTooHigh'),
+        onConfirm: () => setDialogVisible(false),
+      });
+      setDialogVisible(true);
+      return;
+    }
+
+    if (contractError === 'installmentRemainder') {
+      setDialogConfig({
+        title: t('error'),
+        message: t('installmentRemainder'),
+        onConfirm: () => setDialogVisible(false),
+      });
+      setDialogVisible(true);
+      return;
+    }
+
+    const parcelasTotaisPreview = Math.floor(valorTotalReceber / valorParcela);
     const parcelasJaPagasNum = parseInt(parcelasJaPagas, 10) || 0;
     const parcelasError = validateParcelasJaPagas(parcelasJaPagasNum, parcelasTotaisPreview);
 
@@ -138,60 +210,68 @@ export default function Costumer() {
       return;
     }
 
-    if (isEditMode && selectedClient) {
-      // Update existing client
-      const updatedClient: Client = {
-        ...selectedClient,
-        nome,
-        telefone,
-        endereco: endereco || undefined,
-        valorEmprestado: valorEmprestadoInput.getNumericValue(),
-        valorTotalReceber: valorTotalReceberInput.getNumericValue(),
-        valorParcela: valorParcelaInput.getNumericValue(),
-        parcelasJaPagas: parcelasJaPagasNum,
-        frequencia,
-        observacao: observacao || undefined,
-      };
+    setIsSaving(true);
 
-      await updateClient(updatedClient);
+    try {
+      if (isEditMode && selectedClient) {
+        const updatedClient: Client = {
+          ...selectedClient,
+          nome,
+          telefone,
+          endereco: endereco || undefined,
+          valorEmprestado,
+          valorTotalReceber,
+          valorParcela,
+          parcelasJaPagas: parcelasJaPagasNum,
+          frequencia,
+          observacao: observacao || undefined,
+        };
+
+        await updateClient(updatedClient);
+        await triggerSuccessFeedback();
+        setFeedbackMessage(t('clientUpdated'));
+      } else {
+        const novoCliente: Client = {
+          id: Date.now().toString(),
+          nome,
+          telefone,
+          endereco: endereco || undefined,
+          valorEmprestado,
+          valorTotalReceber,
+          valorParcela,
+          parcelasJaPagas: parcelasJaPagasNum,
+          frequencia,
+          observacao: observacao || undefined,
+          dataInicio: new Date().toISOString(),
+          dataTermino: new Date().toISOString(),
+          proximoVencimento: new Date().toISOString(),
+          lucroEsperado: 0,
+          valorRecebido: 0,
+          saldoDevedor: 0,
+          parcelasTotais: 0,
+          parcelasPagas: 0,
+          parcelasRestantes: 0,
+          status: 'ativo',
+          historicoPagamentos: [],
+        };
+
+        await addClient(novoCliente);
+        await triggerSuccessFeedback();
+        setFeedbackMessage(t('contractCreated'));
+      }
+
+      resetForm();
+      setModalVisivel(false);
+    } catch (error: any) {
       setDialogConfig({
-        title: t('success'),
-        message: t('clientUpdated'),
+        title: t('error'),
+        message: error.message || t('error'),
         onConfirm: () => setDialogVisible(false),
       });
       setDialogVisible(true);
-    } else {
-      // Add new client
-      const novoCliente: Client = {
-        id: Date.now().toString(),
-        nome,
-        telefone,
-        endereco: endereco || undefined,
-        valorEmprestado: valorEmprestadoInput.getNumericValue(),
-        valorTotalReceber: valorTotalReceberInput.getNumericValue(),
-        valorParcela: valorParcelaInput.getNumericValue(),
-        parcelasJaPagas: parcelasJaPagasNum,
-        frequencia,
-        observacao: observacao || undefined,
-        dataInicio: new Date().toISOString(),
-        dataTermino: new Date().toISOString(),
-        proximoVencimento: new Date().toISOString(),
-        lucroEsperado: 0,
-        valorRecebido: 0,
-        saldoDevedor: 0,
-        parcelasTotais: 0,
-        parcelasPagas: 0,
-        parcelasRestantes: 0,
-        status: 'ativo',
-        historicoPagamentos: [],
-      };
-
-      await addClient(novoCliente);
+    } finally {
+      setIsSaving(false);
     }
-    
-    // Reset form
-    resetForm();
-    setModalVisivel(false);
   };
 
   const resetForm = () => {
@@ -263,16 +343,12 @@ export default function Costumer() {
         onConfirm: async () => {
           try {
             await markChargeAsPaid(pendingCharge.id);
-            setDialogConfig({
-              title: t('success'),
-              message: t('paymentRegistered'),
-              onConfirm: () => setDialogVisible(false),
-            });
-            setDialogVisible(true);
-          } catch (error) {
+            await triggerSuccessFeedback();
+            setFeedbackMessage(t('paymentRegistered'));
+          } catch (error: any) {
             setDialogConfig({
               title: t('error'),
-              message: t('paymentError'),
+              message: error?.message || t('paymentError'),
               onConfirm: () => setDialogVisible(false),
             });
             setDialogVisible(true);
@@ -291,13 +367,28 @@ export default function Costumer() {
   };
 
   if (isLoading) {
+    return <LoadingView message={t('loading')} backgroundColor="#040814" />;
+  }
+
+  if (loadError) {
     return (
       <View style={styles.loadingContainer}>
-        <Text style={styles.loadingText}>{t('loading')}</Text>
+        <Ionicons name="cloud-offline-outline" size={48} color="#EF4444" />
+        <Text style={styles.errorTitle}>{t('error')}</Text>
+        <Text style={styles.errorMessage}>{loadError}</Text>
+        <TouchableOpacity style={styles.retryButton} onPress={refreshData}>
+          <Text style={styles.retryButtonText}>{t('loadErrorRetry')}</Text>
+        </TouchableOpacity>
       </View>
     );
   }
 
+  const statusFilters: { key: StatusFilter; label: string }[] = [
+    { key: 'all', label: t('filterAll') },
+    { key: 'ativo', label: t('filterActive') },
+    { key: 'atrasado', label: t('filterOverdue') },
+    { key: 'quitado', label: t('filterPaid') },
+  ];
   return (
     <View style={styles.container}>
       <StatusBar barStyle="light-content" />
@@ -306,7 +397,7 @@ export default function Costumer() {
       <View style={styles.header}>
         <View>
           <Text style={styles.title}>{t('myClients')}</Text>
-          <Text style={styles.subtitle}>{clientesFiltrados.length} {t('activeContracts')}</Text>
+          <Text style={styles.subtitle}>{contratosAtivos} {t('activeContracts')}</Text>
         </View>
         <TouchableOpacity 
           style={styles.addButton} 
@@ -318,16 +409,36 @@ export default function Costumer() {
       </View>
 
       {/* Busca */}
+      <FeedbackBanner
+        visible={!!feedbackMessage}
+        message={feedbackMessage || ''}
+        onHide={() => setFeedbackMessage(null)}
+      />
+
       <View style={styles.searchSection}>
         <Ionicons style={styles.searchIcon} name="search" size={18} color="#6B7280" />
         <TextInput
           style={styles.input}
-          placeholder={t('searchByName')}
+          placeholder={t('searchByNamePhoneOrNotes')}
           placeholderTextColor="#4B5563"
           value={busca}
           onChangeText={setBusca}
         />
       </View>
+
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterScroll}>
+        {statusFilters.map(filter => (
+          <TouchableOpacity
+            key={filter.key}
+            style={[styles.filterChip, statusFilter === filter.key && styles.filterChipActive]}
+            onPress={() => setStatusFilter(filter.key)}
+          >
+            <Text style={[styles.filterChipText, statusFilter === filter.key && styles.filterChipTextActive]}>
+              {filter.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
 
       {/* Lista */}
       <FlatList
@@ -350,6 +461,7 @@ export default function Costumer() {
             parcelasRestantes={item.parcelasRestantes}
             saldoDevedor={item.saldoDevedor}
             proximoVencimento={item.proximoVencimento}
+            dataInicio={item.dataInicio}
             status={item.status}
             onDelete={() => handleExcluirCliente(item.id, item.nome)}
             onEdit={() => handleEditarCliente(item)}
@@ -414,7 +526,7 @@ export default function Costumer() {
                   placeholderTextColor="#4B5563"
                   keyboardType="phone-pad"
                   value={telefone}
-                  onChangeText={setTelefone}
+                  onChangeText={(value) => setTelefone(formatPhoneInput(value))}
                 />
               </View>
 
@@ -525,11 +637,14 @@ export default function Costumer() {
               </View>
 
               <TouchableOpacity 
-                style={styles.btnSalvar}
+                style={[styles.btnSalvar, isSaving && styles.btnSalvarDisabled]}
                 activeOpacity={0.8}
                 onPress={handleAdicionarCliente}
+                disabled={isSaving}
               >
-                <Text style={styles.btnSalvarText}>{isEditMode ? t('save') : t('createAndMountCard')}</Text>
+                <Text style={styles.btnSalvarText}>
+                  {isSaving ? t('loading') : isEditMode ? t('save') : t('createAndMountCard')}
+                </Text>
               </TouchableOpacity>
 
             </ScrollView>
@@ -574,6 +689,54 @@ const styles = StyleSheet.create({
     color: "#FFF",
     fontSize: 16,
   },
+  errorTitle: {
+    color: '#FFF',
+    fontSize: 18,
+    fontWeight: '700',
+    marginTop: 16,
+  },
+  errorMessage: {
+    color: '#9CA3AF',
+    fontSize: 14,
+    textAlign: 'center',
+    marginTop: 8,
+    paddingHorizontal: 24,
+  },
+  retryButton: {
+    marginTop: 20,
+    backgroundColor: '#2563EB',
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 12,
+  },
+  retryButtonText: {
+    color: '#FFF',
+    fontWeight: '700',
+  },
+  filterScroll: {
+    marginBottom: 16,
+  },
+  filterChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: '#0B1329',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.06)',
+    marginRight: 8,
+  },
+  filterChipActive: {
+    backgroundColor: '#2563EB',
+    borderColor: '#2563EB',
+  },
+  filterChipText: {
+    color: '#9CA3AF',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  filterChipTextActive: {
+    color: '#FFFFFF',
+  },
   container: { flex: 1, backgroundColor: "#040814", paddingHorizontal: 20, paddingTop: 60 },
   header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 24 },
   title: { fontSize: 26, fontWeight: "800", color: "#FFFFFF" },
@@ -617,5 +780,6 @@ const styles = StyleSheet.create({
   freqTextActive: { color: "#FFFFFF" },
   textAreaContainer: { paddingVertical: 4 },
   btnSalvar: { backgroundColor: "#2563EB", borderRadius: 14, paddingVertical: 16, alignItems: "center", marginTop: 12 },
+  btnSalvarDisabled: { opacity: 0.6 },
   btnSalvarText: { color: "#FFFFFF", fontSize: 15, fontWeight: "700" },
 });

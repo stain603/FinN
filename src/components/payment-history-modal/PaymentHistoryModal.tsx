@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useMemo } from "react";
 import {
   View,
   Text,
@@ -10,7 +10,12 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useLanguage } from "@/contexts/LanguageContext";
-import { formatCurrency, getInstallmentProgress } from "@/services/financialMetrics";
+import {
+  formatCurrency,
+  getInstallmentProgress,
+  formatDaysUntilDueLabel,
+  isOverdue,
+} from "@/services/financialMetrics";
 import { Payment, Client } from "@/types";
 
 interface PaymentHistoryModalProps {
@@ -34,10 +39,18 @@ export default function PaymentHistoryModal({
 
   const progress = client ? getInstallmentProgress(client) : null;
 
-  // Sort payments by date (newest first)
-  const sortedPayments = [...payments].sort(
-    (a, b) => new Date(b.dataPagamento).getTime() - new Date(a.dataPagamento).getTime()
+  const sortedPayments = useMemo(
+    () =>
+      [...payments].sort(
+        (a, b) => new Date(b.dataPagamento).getTime() - new Date(a.dataPagamento).getTime()
+      ),
+    [payments]
   );
+
+  const dueLabel =
+    client?.proximoVencimento && client.status !== 'quitado'
+      ? formatDaysUntilDueLabel(client.proximoVencimento)
+      : null;
 
   return (
     <Modal
@@ -48,15 +61,14 @@ export default function PaymentHistoryModal({
     >
       <View style={styles.modalOverlay}>
         <View style={styles.modalContent}>
-          {/* Header */}
           <View style={styles.modalHeader}>
             <View style={styles.headerLeft}>
               <View style={styles.headerIcon}>
                 <Ionicons name="list-outline" size={24} color="#8B5CF6" />
               </View>
-              <View>
+              <View style={{ flex: 1 }}>
                 <Text style={styles.modalTitle}>{t('paymentHistory')}</Text>
-                <Text style={styles.clientName}>{clientName}</Text>
+                <Text style={styles.clientName} numberOfLines={1}>{clientName}</Text>
               </View>
             </View>
             <TouchableOpacity style={styles.closeButton} onPress={onClose}>
@@ -64,9 +76,31 @@ export default function PaymentHistoryModal({
             </TouchableOpacity>
           </View>
 
-          {/* Statistics */}
           {client && progress && (
             <View style={styles.statsSection}>
+              <Text style={styles.sectionTitle}>{t('financialSummary')}</Text>
+
+              <View style={styles.summaryGrid}>
+                <View style={styles.summaryItem}>
+                  <Text style={styles.summaryLabel}>{t('loanAmount')}</Text>
+                  <Text style={styles.summaryValue}>{formatCurrency(client.valorEmprestado)}</Text>
+                </View>
+                <View style={styles.summaryItem}>
+                  <Text style={styles.summaryLabel}>{t('totalReceive')}</Text>
+                  <Text style={styles.summaryValue}>{formatCurrency(client.valorTotalReceber)}</Text>
+                </View>
+                <View style={styles.summaryItem}>
+                  <Text style={styles.summaryLabel}>{t('profit')}</Text>
+                  <Text style={[styles.summaryValue, styles.profitColor]}>
+                    {formatCurrency(client.lucroEsperado)}
+                  </Text>
+                </View>
+                <View style={styles.summaryItem}>
+                  <Text style={styles.summaryLabel}>{t('installmentValue')}</Text>
+                  <Text style={styles.summaryValue}>{formatCurrency(client.valorParcela)}</Text>
+                </View>
+              </View>
+
               <View style={styles.statRow}>
                 <View style={styles.statItem}>
                   <Text style={styles.statLabel}>{t('paidInstallmentsLabel')}</Text>
@@ -77,6 +111,7 @@ export default function PaymentHistoryModal({
                   <Text style={styles.statValue}>{progress.remaining}</Text>
                 </View>
               </View>
+
               <View style={styles.statRow}>
                 <View style={styles.statItem}>
                   <Text style={styles.statLabel}>{t('amountReceived')}</Text>
@@ -91,6 +126,25 @@ export default function PaymentHistoryModal({
                   </Text>
                 </View>
               </View>
+
+              {dueLabel && (
+                <View style={styles.dueRow}>
+                  <Ionicons
+                    name="calendar-outline"
+                    size={16}
+                    color={client.proximoVencimento && isOverdue(client.proximoVencimento) ? '#EF4444' : '#9CA3AF'}
+                  />
+                  <Text
+                    style={[
+                      styles.dueText,
+                      client.proximoVencimento && isOverdue(client.proximoVencimento) && styles.dueTextOverdue,
+                    ]}
+                  >
+                    {dueLabel}
+                  </Text>
+                </View>
+              )}
+
               <View style={styles.progressBarContainer}>
                 <View style={styles.progressBar}>
                   <View style={[styles.progressFill, { width: `${progress.percent}%` }]} />
@@ -100,7 +154,6 @@ export default function PaymentHistoryModal({
             </View>
           )}
 
-          {/* Content */}
           {isLoading ? (
             <View style={styles.loadingContainer}>
               <ActivityIndicator size="large" color="#8B5CF6" />
@@ -114,6 +167,7 @@ export default function PaymentHistoryModal({
             </View>
           ) : (
             <ScrollView style={styles.scrollContent} showsVerticalScrollIndicator={false}>
+              <Text style={styles.paymentsListTitle}>{t('paymentsList')}</Text>
               {sortedPayments.map((payment) => (
                 <View key={payment.id} style={styles.paymentCard}>
                   <View style={styles.paymentLeft}>
@@ -142,7 +196,6 @@ export default function PaymentHistoryModal({
             </ScrollView>
           )}
 
-          {/* Footer */}
           <View style={styles.modalFooter}>
             <TouchableOpacity style={styles.closeButtonFooter} onPress={onClose}>
               <Text style={styles.closeButtonText}>{t('close')}</Text>
@@ -165,7 +218,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#0B1329",
     borderRadius: 24,
     width: "90%",
-    maxHeight: "80%",
+    maxHeight: "85%",
     borderWidth: 1,
     borderColor: "rgba(255, 255, 255, 0.1)",
   },
@@ -181,6 +234,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
+    flex: 1,
   },
   headerIcon: {
     backgroundColor: "rgba(139, 92, 246, 0.15)",
@@ -205,6 +259,42 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255, 255, 255, 0.05)',
   },
+  sectionTitle: {
+    color: '#9CA3AF',
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    marginBottom: 12,
+    textTransform: 'uppercase',
+  },
+  summaryGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginBottom: 16,
+  },
+  summaryItem: {
+    width: '47%',
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+    borderRadius: 10,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.05)',
+  },
+  summaryLabel: {
+    color: '#6B7280',
+    fontSize: 10,
+    fontWeight: '600',
+    marginBottom: 4,
+  },
+  summaryValue: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  profitColor: {
+    color: '#10B981',
+  },
   statRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -228,6 +318,20 @@ const styles = StyleSheet.create({
   },
   statValueReceived: {
     color: '#3B82F6',
+  },
+  dueRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 12,
+  },
+  dueText: {
+    color: '#9CA3AF',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  dueTextOverdue: {
+    color: '#EF4444',
   },
   progressBarContainer: {
     flexDirection: 'row',
@@ -254,7 +358,14 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     padding: 20,
-    maxHeight: "60%",
+    maxHeight: "40%",
+  },
+  paymentsListTitle: {
+    color: '#9CA3AF',
+    fontSize: 12,
+    fontWeight: '700',
+    marginBottom: 12,
+    textTransform: 'uppercase',
   },
   loadingContainer: {
     padding: 40,
@@ -279,6 +390,7 @@ const styles = StyleSheet.create({
     color: "#6B7280",
     fontSize: 13,
     marginTop: 4,
+    textAlign: 'center',
   },
   paymentCard: {
     backgroundColor: "rgba(255, 255, 255, 0.03)",

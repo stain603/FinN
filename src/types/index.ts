@@ -4,14 +4,9 @@
 export interface User {
   id: string;
   nome: string;
-  pinHash: string;
+  email: string;
   createdAt: string;
   updatedAt: string;
-}
-
-export interface AuthStorageSchema {
-  schemaVersion: number;
-  user: User | null;
 }
 
 export interface Client {
@@ -25,6 +20,7 @@ export interface Client {
   valorEmprestado: number;
   valorTotalReceber: number;
   valorParcela: number;
+  parcelasJaPagas?: number;
   frequencia: "Diário" | "Semanal" | "Mensal" | "Anual";
   
   // Dates

@@ -8,13 +8,26 @@ import ClientsCard from "../../components/organisms/bento-grid/ClientCard";
 import StaggeredText from "../../components/organisms/animated-text";
 import ConfirmDialog from "../../components/base/confirm-dialog";
 import PaymentScreenModal from "../../components/payment-screen-modal";
+import LoadingView from "../../components/base/loading-view";
+import FeedbackBanner from "../../components/base/feedback-banner";
 import { useApp } from "@/contexts/AppContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { useLanguage } from "@/contexts/LanguageContext";
-import { formatCurrency, getDaysUntilDue, getChargeStatusColor } from "@/services/financialMetrics";
+import {
+  formatCurrency,
+  getDaysUntilDue,
+  getChargeStatusColor,
+  getChargeSummary,
+  filterPendingChargesByPeriod,
+  formatDaysUntilDueLabel,
+  ChargeDisplayFilter,
+  isOverdue,
+} from "@/services/financialMetrics";
+import { normalizePhoneForWhatsApp } from "@/utils/phoneUtils";
+import { triggerSuccessFeedback } from "@/utils/feedbackUtils";
 
 export default function Home() {
-  const { dashboardData, markChargeAsPaid, isLoading } = useApp();
+  const { dashboardData, markChargeAsPaid, isLoading, loadError, refreshData, charges, clients, metrics } = useApp();
   const { userName } = useAuth();
   const { t } = useLanguage();
 
@@ -26,6 +39,33 @@ export default function Home() {
     destructive?: boolean;
   } | null>(null);
   const [paymentModalVisible, setPaymentModalVisible] = useState(false);
+  const [chargeFilter, setChargeFilter] = useState<ChargeDisplayFilter>('today');
+  const [paymentFeedback, setPaymentFeedback] = useState<string | null>(null);
+
+  const chargeSummary = useMemo(
+    () => getChargeSummary(charges, clients),
+    [charges, clients]
+  );
+
+  const filteredCharges = useMemo(
+    () => filterPendingChargesByPeriod(charges, clients, chargeFilter),
+    [charges, clients, chargeFilter]
+  );
+
+  const weekChargeCount = useMemo(
+    () => filterPendingChargesByPeriod(charges, clients, 'week').length,
+    [charges, clients]
+  );
+
+  const chargeFilters: { key: ChargeDisplayFilter; label: string; count: number }[] = useMemo(
+    () => [
+      { key: 'today', label: t('chargeFilterToday'), count: chargeSummary.hoje },
+      { key: 'tomorrow', label: t('chargeFilterTomorrow'), count: chargeSummary.amanha },
+      { key: 'overdue', label: t('chargeFilterOverdue'), count: chargeSummary.vencidas },
+      { key: 'week', label: t('chargeFilterWeek'), count: weekChargeCount },
+    ],
+    [t, chargeSummary, weekChargeCount]
+  );
 
   // Formatação da data atual por extenso
   const dataExtenso = useMemo(() => {
@@ -34,8 +74,19 @@ export default function Home() {
   }, []);
 
   const abrirWhatsApp = useCallback((telefone: string, nome: string, valor: number) => {
+    const phone = normalizePhoneForWhatsApp(telefone);
+    if (!phone) {
+      setDialogConfig({
+        title: t('error'),
+        message: t('invalidPhone'),
+        onConfirm: () => setDialogVisible(false),
+      });
+      setDialogVisible(true);
+      return;
+    }
+
     const mensagem = `Olá ${nome}! Passando para lembrar sobre o seu pagamento de ${formatCurrency(valor)} que está em atraso.`;
-    const url = `https://wa.me/${telefone}?text=${encodeURIComponent(mensagem)}`;
+    const url = `https://wa.me/${phone}?text=${encodeURIComponent(mensagem)}`;
     Linking.openURL(url).catch(() => {
       setDialogConfig({
         title: t('error'),
@@ -53,17 +104,15 @@ export default function Home() {
       onConfirm: async () => {
         try {
           await markChargeAsPaid(chargeId);
-          setDialogConfig({
-            title: t('success'),
-            message: t('paymentRegistered'),
-            onConfirm: () => setDialogVisible(false),
-          });
-        } catch (error) {
+          await triggerSuccessFeedback();
+          setPaymentFeedback(t('paymentRegistered'));
+        } catch (error: any) {
           setDialogConfig({
             title: t('error'),
-            message: t('paymentError'),
+            message: error?.message || t('paymentError'),
             onConfirm: () => setDialogVisible(false),
           });
+          setDialogVisible(true);
         }
       },
     });
@@ -71,9 +120,18 @@ export default function Home() {
   }, [t, markChargeAsPaid]);
 
   if (isLoading) {
+    return <LoadingView message={t('loading')} />;
+  }
+
+  if (loadError) {
     return (
       <View style={styles.loadingContainer}>
-        <Text style={styles.loadingText}>{t('loading')}</Text>
+        <Ionicons name="cloud-offline-outline" size={48} color="#EF4444" />
+        <Text style={styles.errorTitle}>{t('error')}</Text>
+        <Text style={styles.errorMessage}>{loadError}</Text>
+        <TouchableOpacity style={styles.retryButton} onPress={refreshData}>
+          <Text style={styles.retryButtonText}>{t('loadErrorRetry')}</Text>
+        </TouchableOpacity>
       </View>
     );
   }
@@ -109,10 +167,106 @@ export default function Home() {
             <ReceivableCard />
           </View>
           <ClientsCard />
+
+          {/* Resumo rápido */}
+          <View style={styles.summaryRow}>
+            <View style={styles.summaryChip}>
+              <Text style={styles.summaryChipValue}>{metrics.clientesAtivos}</Text>
+              <Text style={styles.summaryChipLabel}>{t('activeClients')}</Text>
+            </View>
+            <View style={styles.summaryChip}>
+              <Text style={styles.summaryChipValue}>{metrics.clientesQuitados}</Text>
+              <Text style={styles.summaryChipLabel}>{t('completedContracts')}</Text>
+            </View>
+            <View style={styles.summaryChip}>
+              <Text style={[styles.summaryChipValue, chargeSummary.pendentes > 0 && styles.summaryChipWarning]}>
+                {chargeSummary.pendentes}
+              </Text>
+              <Text style={styles.summaryChipLabel}>{t('pendingCharges')}</Text>
+            </View>
+            <View style={styles.summaryChip}>
+              <Text style={[styles.summaryChipValue, chargeSummary.vencidas > 0 && styles.summaryChipDanger]}>
+                {chargeSummary.vencidas}
+              </Text>
+              <Text style={styles.summaryChipLabel}>{t('overdueCharges')}</Text>
+            </View>
+          </View>
         </View>
+
+        <FeedbackBanner
+          visible={!!paymentFeedback}
+          message={paymentFeedback || ''}
+          onHide={() => setPaymentFeedback(null)}
+        />
 
         {/* ─── 3. LISTAS DE FLUXO ─── */}
         <View style={styles.listsContainer}>
+
+          {/* Filtro de cobranças */}
+          <View style={styles.chargeFilterSection}>
+            <View style={styles.chargeFilterHeader}>
+              <Text style={styles.chargeFilterTitle}>{t('charges')}</Text>
+              <View style={styles.pendingBadge}>
+                <Text style={styles.pendingBadgeText}>
+                  {chargeSummary.pendentes} {t('pending')}
+                </Text>
+              </View>
+            </View>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chargeFilterScroll}>
+              {chargeFilters.map(f => (
+                <TouchableOpacity
+                  key={f.key}
+                  style={[styles.chargeFilterChip, chargeFilter === f.key && styles.chargeFilterChipActive]}
+                  onPress={() => setChargeFilter(f.key)}
+                >
+                  <Text style={[styles.chargeFilterText, chargeFilter === f.key && styles.chargeFilterTextActive]}>
+                    {f.label}
+                  </Text>
+                  {f.count > 0 && (
+                    <View style={[styles.chargeCountBadge, f.key === 'overdue' && styles.chargeCountBadgeDanger]}>
+                      <Text style={styles.chargeCountText}>{f.count}</Text>
+                    </View>
+                  )}
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+
+            {filteredCharges.length > 0 ? (
+              filteredCharges.map(c => {
+                const overdue = isOverdue(c.dataVencimento);
+                const statusColor = getChargeStatusColor(c);
+                return (
+                  <View key={c.id} style={[styles.customerCard, overdue && styles.overdueCard]}>
+                    <View style={styles.customerCardLeft}>
+                      <View style={styles.statusIndicatorContainer}>
+                        <View style={[styles.statusIndicator, { backgroundColor: statusColor }]} />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.customerName} numberOfLines={1}>{c.clienteNome}</Text>
+                        <Text style={[styles.customerMeta, overdue && styles.overdueMeta]}>
+                          {formatDaysUntilDueLabel(c.dataVencimento)}
+                        </Text>
+                      </View>
+                    </View>
+                    <View style={styles.customerCardRight}>
+                      <Text style={[styles.customerValue, overdue && styles.overdueValue]}>{formatCurrency(c.valor)}</Text>
+                      <TouchableOpacity
+                        style={styles.paidButton}
+                        onPress={() => marcarComoPago(c.id, c.clienteNome)}
+                      >
+                        <Ionicons name="checkmark-circle" size={18} color="#10B981" />
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                );
+              })
+            ) : (
+              <View style={styles.filterEmptyState}>
+                <Ionicons name="calendar-outline" size={32} color="#6B7280" />
+                <Text style={styles.filterEmptyText}>{t('noChargesForFilter')}</Text>
+              </View>
+            )}
+          </View>
           
           {/* LISTA A: CLIENTES ATRASADOS */}
           {dashboardData.clientesAtrasados.length > 0 && (
@@ -337,8 +491,8 @@ export default function Home() {
         visible={dialogVisible}
         title={dialogConfig?.title || ''}
         message={dialogConfig?.message || ''}
-        onConfirm={() => {
-          dialogConfig?.onConfirm();
+        onConfirm={async () => {
+          await dialogConfig?.onConfirm();
           setDialogVisible(false);
         }}
         onCancel={() => setDialogVisible(false)}
@@ -363,6 +517,30 @@ const styles = StyleSheet.create({
   loadingText: {
     color: "#FFF",
     fontSize: 16,
+  },
+  errorTitle: {
+    color: '#FFF',
+    fontSize: 18,
+    fontWeight: '700',
+    marginTop: 16,
+  },
+  errorMessage: {
+    color: '#9CA3AF',
+    fontSize: 14,
+    textAlign: 'center',
+    marginTop: 8,
+    paddingHorizontal: 24,
+  },
+  retryButton: {
+    marginTop: 20,
+    backgroundColor: '#2563EB',
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 12,
+  },
+  retryButtonText: {
+    color: '#FFF',
+    fontWeight: '700',
   },
   container: {
     flex: 1,
@@ -612,5 +790,126 @@ const styles = StyleSheet.create({
     color: '#6B7280',
     fontSize: 14,
     marginTop: 4,
+    textAlign: 'center',
+    paddingHorizontal: 24,
+  },
+  summaryRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  summaryChip: {
+    flex: 1,
+    backgroundColor: '#111827',
+    borderRadius: 12,
+    padding: 10,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.05)',
+  },
+  summaryChipValue: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  summaryChipWarning: {
+    color: '#F59E0B',
+  },
+  summaryChipDanger: {
+    color: '#EF4444',
+  },
+  summaryChipLabel: {
+    color: '#6B7280',
+    fontSize: 9,
+    fontWeight: '600',
+    marginTop: 4,
+    textAlign: 'center',
+  },
+  chargeFilterSection: {
+    gap: 12,
+    marginBottom: 8,
+  },
+  chargeFilterHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  chargeFilterTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#9CA3AF',
+  },
+  pendingBadge: {
+    backgroundColor: 'rgba(59, 130, 246, 0.15)',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  pendingBadgeText: {
+    color: '#60A5FA',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  chargeFilterScroll: {
+    marginBottom: 4,
+  },
+  chargeFilterChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: '#111827',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    marginRight: 8,
+  },
+  chargeFilterChipActive: {
+    backgroundColor: '#2563EB',
+    borderColor: '#2563EB',
+  },
+  chargeFilterText: {
+    color: '#9CA3AF',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  chargeFilterTextActive: {
+    color: '#FFFFFF',
+  },
+  chargeCountBadge: {
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    borderRadius: 10,
+    minWidth: 18,
+    height: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 4,
+  },
+  chargeCountBadgeDanger: {
+    backgroundColor: 'rgba(239, 68, 68, 0.3)',
+  },
+  chargeCountText: {
+    color: '#FFFFFF',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  filterEmptyState: {
+    alignItems: 'center',
+    paddingVertical: 24,
+    backgroundColor: '#111827',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.05)',
+  },
+  filterEmptyText: {
+    color: '#6B7280',
+    fontSize: 13,
+    marginTop: 8,
+  },
+  overdueMeta: {
+    color: '#EF4444',
+  },
+  overdueValue: {
+    color: '#EF4444',
   },
 });
