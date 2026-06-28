@@ -16,6 +16,7 @@ import {
   getDaysUntilDue,
   isNewContract,
   isOverdue,
+  isToday,
 } from "@/services/financialMetrics";
 import { normalizePhoneForWhatsApp } from "@/utils/phoneUtils";
 import { copyToClipboard } from "@/utils/clipboardUtils";
@@ -87,10 +88,8 @@ function CardCliente({
     if (status === 'cancelado') return '#6B7280';
 
     if (proximoVencimento) {
-      const dueDate = new Date(proximoVencimento);
-      const today = new Date();
-      if (dueDate.toDateString() === today.toDateString()) return '#F59E0B';
-      if (dueDate < today && saldoDevedor && saldoDevedor > 0) return '#EF4444';
+      if (isToday(proximoVencimento)) return '#F59E0B';
+      if (isOverdue(proximoVencimento) && saldoDevedor && saldoDevedor > 0) return '#EF4444';
     }
 
     return '#10B981';
@@ -244,30 +243,46 @@ function CardCliente({
           {endereco ? (
             <Text style={styles.enderecoText} numberOfLines={2}>{endereco}</Text>
           ) : null}
+
           <View style={styles.dataRow}>
             <View style={styles.dataGroup}>
-              <Text style={styles.dataLabel}>{t('loaned')}</Text>
+              <Text style={styles.dataLabel}>{t('loanAmount')}</Text>
               <Text style={styles.dataValue}>{valorEmprestado}</Text>
             </View>
             <View style={styles.dataGroup}>
-              <Text style={styles.dataLabel}>{t('toReceive')}</Text>
+              <Text style={styles.dataLabel}>{t('totalTransaction')}</Text>
               <Text style={styles.dataValue}>{valorTotalReceber}</Text>
             </View>
           </View>
 
           <View style={styles.dataRow}>
-            {lucroEsperado !== undefined && (
-              <View style={styles.dataGroup}>
-                <Text style={styles.dataLabel}>{t('profit')}</Text>
-                <Text style={[styles.dataValue, styles.profitValue]}>{formatCurrency(lucroEsperado)}</Text>
-              </View>
-            )}
-            {valorRecebido !== undefined && (
-              <View style={styles.dataGroup}>
-                <Text style={styles.dataLabel}>{t('received')}</Text>
-                <Text style={[styles.dataValue, styles.receivedValue]}>{formatCurrency(valorRecebido)}</Text>
-              </View>
-            )}
+            <View style={styles.dataGroup}>
+              <Text style={styles.dataLabel}>{t('installmentValue')}</Text>
+              <Text style={[styles.dataValue, styles.destaqueVerde]}>{valorParcela}</Text>
+            </View>
+            <View style={styles.dataGroup}>
+              <Text style={styles.dataLabel}>{t('amountPaid')}</Text>
+              <Text style={[styles.dataValue, styles.receivedValue]}>
+                {valorRecebido !== undefined ? formatCurrency(valorRecebido) : '—'}
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.dataRow}>
+            <View style={styles.dataGroup}>
+              <Text style={styles.dataLabel}>{t('remainingAmount')}</Text>
+              <Text style={[styles.dataValue, (saldoDevedor ?? 0) > 0 ? styles.debtValue : styles.receivedValue]}>
+                {saldoDevedor !== undefined ? formatCurrency(saldoDevedor) : '—'}
+              </Text>
+            </View>
+            <View style={styles.dataGroup}>
+              <Text style={styles.dataLabel}>{t('paidInstallmentsLabel')}</Text>
+              <Text style={styles.dataValue}>
+                {parcelasPagas !== undefined && parcelasTotais !== undefined
+                  ? `${parcelasPagas} / ${parcelasTotais} ${t('installments')}`
+                  : '—'}
+              </Text>
+            </View>
           </View>
         </View>
 
@@ -562,11 +577,11 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "800",
   },
-  profitValue: {
-    color: "#10B981",
-  },
   receivedValue: {
     color: "#3B82F6",
+  },
+  debtValue: {
+    color: "#EF4444",
   },
   enderecoText: {
     color: "#9CA3AF",

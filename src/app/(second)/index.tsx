@@ -22,14 +22,14 @@ import { useApp } from "@/contexts/AppContext";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { Client } from "@/types";
 import { useCurrencyInput } from "@/hooks/useCurrencyInput";
-import { formatCurrency, validateParcelasJaPagas, validateContractFinancials } from "@/services/financialMetrics";
+import { formatCurrency, validateParcelasJaPagas, validateContractFinancials, toDateInputValue, parseDateInputValue, canRegisterPayment } from "@/services/financialMetrics";
 import { formatPhoneInput, validatePhone, phoneMatchesSearch } from "@/utils/phoneUtils";
 import { triggerSuccessFeedback } from "@/utils/feedbackUtils";
 
 type StatusFilter = 'all' | 'ativo' | 'atrasado' | 'quitado' | 'cancelado';
 
 export default function Costumer() {
-  const { clients, addClient, deleteClient, updateClient, charges, markChargeAsPaid, payments, isLoading, loadError, refreshData } = useApp();
+  const { clients, addClient, deleteClient, updateClient, registerClientPayment, payments, isLoading, loadError, refreshData } = useApp();
   const { t } = useLanguage();
   const [busca, setBusca] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
@@ -56,6 +56,7 @@ export default function Costumer() {
   const valorParcelaInput = useCurrencyInput();
   const [frequencia, setFrequencia] = useState<"Diário" | "Semanal" | "Mensal" | "Anual">("Mensal");
   const [parcelasJaPagas, setParcelasJaPagas] = useState("0");
+  const [proximoVencimento, setProximoVencimento] = useState("");
   const [observacao, setObservacao] = useState("");
 
   const contratosAtivos = useMemo(
@@ -225,6 +226,9 @@ export default function Costumer() {
           parcelasJaPagas: parcelasJaPagasNum,
           frequencia,
           observacao: observacao || undefined,
+          proximoVencimento: proximoVencimento
+            ? parseDateInputValue(proximoVencimento)
+            : selectedClient.proximoVencimento,
         };
 
         await updateClient(updatedClient);
@@ -283,6 +287,7 @@ export default function Costumer() {
     valorParcelaInput.onChangeText('');
     setFrequencia("Mensal");
     setParcelasJaPagas("0");
+    setProximoVencimento("");
     setObservacao("");
     setIsEditMode(false);
     setSelectedClient(null);
@@ -299,6 +304,9 @@ export default function Costumer() {
     valorParcelaInput.onChangeText(formatCurrency(client.valorParcela));
     setFrequencia(client.frequencia);
     setParcelasJaPagas(String(client.parcelasJaPagas ?? 0));
+    setProximoVencimento(
+      client.proximoVencimento ? toDateInputValue(client.proximoVencimento) : toDateInputValue(new Date().toISOString())
+    );
     setObservacao(client.observacao || "");
     setModalVisivel(true);
   };
@@ -331,39 +339,35 @@ export default function Costumer() {
   };
 
   const handleMarcarPagamentoRapido = async (client: Client) => {
-    // Encontrar a charge pendente mais recente do cliente
-    const pendingCharge = charges
-      .filter(c => c.clienteId === client.id && c.status === 'pendente')
-      .sort((a, b) => new Date(a.dataVencimento).getTime() - new Date(b.dataVencimento).getTime())[0];
-
-    if (pendingCharge) {
+    if (!canRegisterPayment(client)) {
       setDialogConfig({
-        title: t('confirmPayment'),
-        message: `${t('markPayment')} ${formatCurrency(pendingCharge.valor)} ${t('for')} ${client.nome}?`,
-        onConfirm: async () => {
-          try {
-            await markChargeAsPaid(pendingCharge.id);
-            await triggerSuccessFeedback();
-            setFeedbackMessage(t('paymentRegistered'));
-          } catch (error: any) {
-            setDialogConfig({
-              title: t('error'),
-              message: error?.message || t('paymentError'),
-              onConfirm: () => setDialogVisible(false),
-            });
-            setDialogVisible(true);
-          }
-        },
-      });
-      setDialogVisible(true);
-    } else {
-      setDialogConfig({
-        title: t('success'),
-        message: t('noPendingPaymentsClient'),
+        title: t('error'),
+        message: t('contractFullyPaid'),
         onConfirm: () => setDialogVisible(false),
       });
       setDialogVisible(true);
+      return;
     }
+
+    setDialogConfig({
+      title: t('confirmPayment'),
+      message: `${t('markPayment')} ${formatCurrency(client.valorParcela)} ${t('for')} ${client.nome}?`,
+      onConfirm: async () => {
+        try {
+          await registerClientPayment(client.id);
+          await triggerSuccessFeedback();
+          setFeedbackMessage(t('paymentRegistered'));
+        } catch (error: any) {
+          setDialogConfig({
+            title: t('error'),
+            message: error?.message || t('paymentError'),
+            onConfirm: () => setDialogVisible(false),
+          });
+          setDialogVisible(true);
+        }
+      },
+    });
+    setDialogVisible(true);
   };
 
   if (isLoading) {
@@ -622,6 +626,21 @@ export default function Costumer() {
                   </TouchableOpacity>
                 ))}
               </View>
+
+              {isEditMode && (
+                <>
+                  <Text style={styles.label}>{t('nextDueDateField')}</Text>
+                  <View style={styles.inputContainer}>
+                    <TextInput
+                      style={styles.modalInput}
+                      placeholder="AAAA-MM-DD"
+                      placeholderTextColor="#4B5563"
+                      value={proximoVencimento}
+                      onChangeText={setProximoVencimento}
+                    />
+                  </View>
+                </>
+              )}
 
               <Text style={styles.label}>{t('observations')}</Text>
               <View style={[styles.inputContainer, styles.textAreaContainer]}>

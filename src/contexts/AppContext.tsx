@@ -3,7 +3,7 @@ import { Client, Charge, Loan, Payment, FinancialMetrics, DashboardData } from '
 import * as storageService from '../services/storageService';
 import { generateId } from '../services/storageService';
 import { useAuth } from './AuthContext';
-import { calculateAllMetrics, getDashboardData, calculateContractDetails, updateClientFinancialStatus, generateChargesForClients, migrateClientData, isContractActive } from '../services/financialMetrics';
+import { calculateAllMetrics, getDashboardData, calculateContractDetails, updateClientFinancialStatus, generateChargesForClients, migrateClientData, isContractActive, applyPaymentToClient, buildPendingChargeForClient, canRegisterPayment } from '../services/financialMetrics';
 import { mapSupabaseError } from '../utils/supabaseErrors';
 
 interface AppContextType {
@@ -23,6 +23,7 @@ interface AppContextType {
   updateClient: (client: Client) => Promise<void>;
   deleteClient: (id: string) => Promise<void>;
   markChargeAsPaid: (chargeId: string) => Promise<void>;
+  registerClientPayment: (clientId: string) => Promise<void>;
   refreshData: () => Promise<void>;
 }
 
@@ -161,6 +162,44 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     await loadData();
   };
 
+  const syncPendingChargeForClient = async (client: Client) => {
+    if (!isContractActive(client)) return;
+
+    const pendingCharge = buildPendingChargeForClient(client);
+    if (!pendingCharge) return;
+
+    const existingCharges = await storageService.getCharges();
+    const clientPending = existingCharges.filter(
+      charge => charge.clienteId === client.id && charge.status === 'pendente'
+    );
+
+    let changed = false;
+
+    for (const charge of clientPending) {
+      if (chargeDueDateKey(charge.dataVencimento) !== chargeDueDateKey(pendingCharge.dataVencimento)) {
+        await storageService.deleteCharge(charge.id);
+        changed = true;
+      }
+    }
+
+    const existingForDueDate = existingCharges.find(
+      charge =>
+        charge.clienteId === client.id &&
+        charge.status === 'pendente' &&
+        chargeDueDateKey(charge.dataVencimento) === chargeDueDateKey(pendingCharge.dataVencimento)
+    );
+
+    if (!existingForDueDate) {
+      await storageService.saveCharge(pendingCharge);
+      changed = true;
+    }
+
+    if (changed) {
+      const refreshedCharges = await storageService.getCharges();
+      setCharges(refreshedCharges);
+    }
+  };
+
   const addClient = async (client: Client) => {
     try {
       const clientWithCalculations = calculateContractDetails({
@@ -200,10 +239,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const updateClient = async (client: Client) => {
     try {
-      const withDetails = calculateContractDetails(client);
+      const withDetails = calculateContractDetails(client, { preserveProximoVencimento: true });
       const clientWithUpdatedStatus = updateClientFinancialStatus(withDetails, payments);
       await storageService.saveClient(clientWithUpdatedStatus);
       setClients(prev => prev.map(c => (c.id === client.id ? clientWithUpdatedStatus : c)));
+
+      if (isContractActive(clientWithUpdatedStatus)) {
+        await syncPendingChargeForClient(clientWithUpdatedStatus);
+      }
     } catch (error) {
       throw new Error(mapSupabaseError(error));
     }
@@ -277,9 +320,61 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
       const client = clients.find(item => item.id === charge.clienteId);
       if (client) {
-        const updatedClient = updateClientFinancialStatus(client, nextPayments);
+        const updatedClient = applyPaymentToClient(client, nextPayments);
         await storageService.saveClient(updatedClient);
         setClients(prev => prev.map(item => (item.id === client.id ? updatedClient : item)));
+
+        if (isContractActive(updatedClient)) {
+          await syncPendingChargeForClient(updatedClient);
+        }
+      }
+    } catch (error) {
+      throw new Error(mapSupabaseError(error));
+    }
+  };
+
+  const registerClientPayment = async (clientId: string) => {
+    const client = clients.find(item => item.id === clientId);
+    if (!client) {
+      throw new Error('Cliente não encontrado.');
+    }
+
+    if (!canRegisterPayment(client)) {
+      throw new Error('Contrato já quitado.');
+    }
+
+    const pendingCharge = charges
+      .filter(charge => charge.clienteId === clientId && charge.status === 'pendente')
+      .sort(
+        (a, b) =>
+          new Date(a.dataVencimento).getTime() - new Date(b.dataVencimento).getTime()
+      )[0];
+
+    if (pendingCharge) {
+      await markChargeAsPaid(pendingCharge.id);
+      return;
+    }
+
+    try {
+      const payment: Payment = {
+        id: generateId(),
+        chargeId: generateId(),
+        clienteId: client.id,
+        clienteNome: client.nome,
+        valor: client.valorParcela,
+        dataPagamento: new Date().toISOString(),
+      };
+
+      await storageService.savePayment(payment);
+      const nextPayments = [...payments, payment];
+      setPayments(nextPayments);
+
+      const updatedClient = applyPaymentToClient(client, nextPayments);
+      await storageService.saveClient(updatedClient);
+      setClients(prev => prev.map(item => (item.id === client.id ? updatedClient : item)));
+
+      if (isContractActive(updatedClient)) {
+        await syncPendingChargeForClient(updatedClient);
       }
     } catch (error) {
       throw new Error(mapSupabaseError(error));
@@ -303,6 +398,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     updateClient,
     deleteClient,
     markChargeAsPaid,
+    registerClientPayment,
     refreshData,
   };
 

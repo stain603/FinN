@@ -93,7 +93,13 @@ export const migrateClientData = (client: any): Client => {
   const oldFieldNames = client.numero !== undefined || client.tipoPagamento !== undefined || 
                         client.dataCadastro !== undefined || client.totalParcelas !== undefined;
   
-  if (!oldFieldNames) return client as Client;
+  if (!oldFieldNames) {
+    const migrated = client as Client;
+    if (!migrated.proximoVencimento && migrated.dataInicio) {
+      return calculateContractDetails(migrated);
+    }
+    return migrated;
+  }
   
   return {
     id: client.id,
@@ -150,12 +156,35 @@ export const isOverdue = (dateString: string): boolean => {
   return date.getTime() < today.getTime();
 };
 
-// Get days until due date
+// Get days until due date (normalized to start of day)
 export const getDaysUntilDue = (dateString: string): number => {
-  const date = new Date(dateString);
-  const today = new Date();
+  const date = startOfDay(new Date(dateString));
+  const today = startOfDay();
   const diffTime = date.getTime() - today.getTime();
-  return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+  return Math.round(diffTime / (1000 * 60 * 60 * 24));
+};
+
+export const toDateInputValue = (dateString: string): string => {
+  const date = startOfDay(new Date(dateString));
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+export const parseDateInputValue = (value: string): string => {
+  const [year, month, day] = value.split('-').map(Number);
+  return startOfDay(new Date(year, month - 1, day)).toISOString();
+};
+
+export const advanceProximoVencimento = (
+  currentDueDate: string,
+  frequencia: Client['frequencia']
+): string => {
+  const daysPerPeriod = getDaysFromFrequency(frequencia);
+  const next = startOfDay(new Date(currentDueDate));
+  next.setDate(next.getDate() + daysPerPeriod);
+  return next.toISOString();
 };
 
 // Human-readable days until due (display-only)
@@ -185,8 +214,8 @@ export const getInitialValorRecebido = (client: Client): number => {
   return (client.parcelasJaPagas ?? 0) * client.valorParcela;
 };
 
-// Calcula próximo vencimento com base nas parcelas já pagas
-const calculateProximoVencimento = (
+// Calcula a data da próxima parcela pendente com base no início do contrato
+export const calculateInitialProximoVencimento = (
   dataInicio: string,
   frequencia: Client['frequencia'],
   parcelasPagas: number,
@@ -196,12 +225,37 @@ const calculateProximoVencimento = (
   if (settled) return dataTermino;
 
   const daysPerPeriod = getDaysFromFrequency(frequencia);
-  const startDate = new Date(dataInicio);
+  const startDate = startOfDay(new Date(dataInicio));
   const nextDueDate = new Date(startDate);
-  if (parcelasPagas > 0) {
-    nextDueDate.setDate(startDate.getDate() + (parcelasPagas * daysPerPeriod));
-  }
+  nextDueDate.setDate(startDate.getDate() + parcelasPagas * daysPerPeriod);
   return nextDueDate.toISOString();
+};
+
+export const buildPendingChargeForClient = (client: Client): Charge | null => {
+  if (!isContractActive(client) || !client.proximoVencimento) {
+    return null;
+  }
+
+  const dueDate = startOfDay(new Date(client.proximoVencimento));
+
+  return {
+    id: `${client.id}-${dueDate.toISOString().split('T')[0]}`,
+    clienteId: client.id,
+    clienteNome: client.nome,
+    valor: client.valorParcela,
+    dataVencimento: dueDate.toISOString(),
+    status: 'pendente',
+    parcela: (client.parcelasPagas || 0) + 1,
+    totalParcelas: client.parcelasTotais,
+    telefone: client.telefone,
+  };
+};
+
+export const canRegisterPayment = (client: Client): boolean => {
+  if (client.status === 'cancelado') return false;
+  const saldoDevedor = client.saldoDevedor ?? 0;
+  const parcelasRestantes = client.parcelasRestantes ?? 0;
+  return saldoDevedor > 0 && parcelasRestantes > 0;
 };
 
 // Progresso do contrato (fonte única para UI)
@@ -232,7 +286,10 @@ export const validateParcelasJaPagas = (
 };
 
 // Calculate contract details automatically
-export const calculateContractDetails = (client: Client): Client => {
+export const calculateContractDetails = (
+  client: Client,
+  options?: { preserveProximoVencimento?: boolean }
+): Client => {
   const { valorEmprestado, valorTotalReceber, valorParcela, frequencia, dataInicio } = client;
 
   const lucroEsperado = valorTotalReceber - valorEmprestado;
@@ -240,9 +297,9 @@ export const calculateContractDetails = (client: Client): Client => {
   const parcelasJaPagas = clampParcelasJaPagas(client.parcelasJaPagas, parcelasTotais);
 
   const daysPerPeriod = getDaysFromFrequency(frequencia);
-  const startDate = new Date(dataInicio);
+  const startDate = startOfDay(new Date(dataInicio));
   const endDate = new Date(startDate);
-  endDate.setDate(startDate.getDate() + (parcelasTotais * daysPerPeriod));
+  endDate.setDate(startDate.getDate() + parcelasTotais * daysPerPeriod);
   const dataTermino = endDate.toISOString();
 
   const valorRecebido = parcelasJaPagas * valorParcela;
@@ -251,13 +308,20 @@ export const calculateContractDetails = (client: Client): Client => {
   const parcelasRestantes = parcelasTotais - parcelasPagas;
   const settled = isContractSettled(saldoDevedor, parcelasRestantes);
 
-  const proximoVencimento = calculateProximoVencimento(
-    dataInicio,
-    frequencia,
-    parcelasPagas,
-    settled,
-    dataTermino
-  );
+  let proximoVencimento: string;
+  if (settled) {
+    proximoVencimento = dataTermino;
+  } else if (options?.preserveProximoVencimento && client.proximoVencimento) {
+    proximoVencimento = startOfDay(new Date(client.proximoVencimento)).toISOString();
+  } else {
+    proximoVencimento = calculateInitialProximoVencimento(
+      dataInicio,
+      frequencia,
+      parcelasPagas,
+      settled,
+      dataTermino
+    );
+  }
 
   return {
     ...client,
@@ -300,14 +364,16 @@ export const updateClientFinancialStatus = (
 
   const proximoVencimento = settled
     ? client.dataTermino
-    : calculateProximoVencimento(
-        client.dataInicio,
-        client.frequencia,
-        parcelasPagas,
-        false,
-        client.dataTermino
-      );
-  
+    : client.proximoVencimento
+      ? startOfDay(new Date(client.proximoVencimento)).toISOString()
+      : calculateInitialProximoVencimento(
+          client.dataInicio,
+          client.frequencia,
+          parcelasPagas,
+          false,
+          client.dataTermino
+        );
+
   // Build payment history from payments
   const sortedPayments = [...clientPayments].sort(
     (a, b) => new Date(a.dataPagamento).getTime() - new Date(b.dataPagamento).getTime()
@@ -337,35 +403,51 @@ export const updateClientFinancialStatus = (
   };
 };
 
+export const applyPaymentToClient = (
+  client: Client,
+  payments: Payment[]
+): Client => {
+  const updated = updateClientFinancialStatus(client, payments);
+
+  if (isContractSettled(updated.saldoDevedor, updated.parcelasRestantes)) {
+    return {
+      ...updated,
+      proximoVencimento: updated.dataTermino,
+      status: 'quitado',
+    };
+  }
+
+  const proximoVencimento = advanceProximoVencimento(
+    client.proximoVencimento,
+    client.frequencia
+  );
+
+  return {
+    ...updated,
+    proximoVencimento,
+    status: getContractStatus(client, {
+      saldoDevedor: updated.saldoDevedor,
+      parcelasRestantes: updated.parcelasRestantes,
+      proximoVencimento,
+    }),
+  };
+};
+
 // Generate charges for clients automatically
 export const generateChargesForClients = (clients: Client[]): Charge[] => {
   const charges: Charge[] = [];
-  const today = startOfDay();
-  
+
   clients.forEach(client => {
     if (client.status === 'cancelado') return;
     if (!isContractActive(client)) return;
     if (!client.proximoVencimento || !client.parcelasTotais) return;
-    
-    const nextDueDate = startOfDay(new Date(client.proximoVencimento));
-    
-    if (nextDueDate.getTime() <= today.getTime()) {
-      const chargeId = `${client.id}-${nextDueDate.toISOString().split('T')[0]}`;
-      
-      charges.push({
-        id: chargeId,
-        clienteId: client.id,
-        clienteNome: client.nome,
-        valor: client.valorParcela,
-        dataVencimento: nextDueDate.toISOString(),
-        status: 'pendente',
-        parcela: (client.parcelasPagas || 0) + 1,
-        totalParcelas: client.parcelasTotais,
-        telefone: client.telefone,
-      });
+
+    const pendingCharge = buildPendingChargeForClient(client);
+    if (pendingCharge) {
+      charges.push(pendingCharge);
     }
   });
-  
+
   return charges;
 };
 
